@@ -281,9 +281,14 @@ public class OcrEngine : IDisposable
 
     private float[] PreprocessImage(Image<Rgb24> image)
     {
+        // Enhance contrast to make text more visible
+        using var enhanced = image.Clone(x => x
+            .Contrast(1.3f)      // Increase contrast
+            .Brightness(1.05f)); // Slight brightness boost
+
         // Squish resize to 384x384 (no aspect ratio preservation)
         // This matches the HuggingFace ViTImageProcessor behavior
-        using var resizedImage = image.Clone(x => x.Resize(ImageSize, ImageSize));
+        using var resizedImage = enhanced.Clone(x => x.Resize(ImageSize, ImageSize));
 
         // Convert to float tensor with normalization
         var pixels = new float[3 * ImageSize * ImageSize];

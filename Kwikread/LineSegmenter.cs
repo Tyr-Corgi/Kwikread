@@ -96,19 +96,15 @@ public class LineSegmenter
             }
         }
 
-        // Extract final line images
+        // Extract final line images (no padding - peaks already define boundaries)
         foreach (var (top, bottom) in finalRegions)
         {
-            var lineHeight = bottom - top;
-            var padding = Math.Min(10, lineHeight / 4);
-            var cropTop = Math.Max(0, top - padding);
-            var cropBottom = Math.Min(image.Height, bottom + padding);
-            var cropHeight = cropBottom - cropTop;
+            var cropHeight = bottom - top;
 
-            var lineImage = image.Clone(ctx => ctx.Crop(new Rectangle(0, cropTop, image.Width, cropHeight)));
+            var lineImage = image.Clone(ctx => ctx.Crop(new Rectangle(0, top, image.Width, cropHeight)));
             lines.Add(lineImage);
 
-            Console.WriteLine($"  Extracted line {lines.Count}: y={cropTop}-{cropBottom} ({cropHeight}px)");
+            Console.WriteLine($"  Extracted line {lines.Count}: y={top}-{bottom} ({cropHeight}px)");
         }
 
         if (lines.Count == 0)
@@ -143,40 +139,64 @@ public class LineSegmenter
     }
 
     /// <summary>
-    /// When one big region is found, split it by finding local maxima (gaps) in the projection.
+    /// Split a region into lines using a hybrid approach:
+    /// 1. Estimate line count from region height
+    /// 2. Find the best gap (whitespace peak) near each estimated boundary
     /// </summary>
     private static List<(int top, int bottom)> SplitRegionByPeaks(double[] projection, int regionTop, int regionBottom, int totalHeight)
     {
-        var peaks = new List<int>();
-        for (int y = regionTop + 2; y < regionBottom - 2; y++)
+        int regionHeight = regionBottom - regionTop;
+
+        // Estimate typical line height (handwriting is usually 50-80px at 2000px width)
+        const int TypicalLineHeight = 70;
+        int estimatedLines = Math.Max(1, (regionHeight + TypicalLineHeight / 2) / TypicalLineHeight);
+
+        // If region is small enough for just a few lines, use simple division
+        if (estimatedLines <= 2)
         {
-            if (y <= 0 || y >= projection.Length - 1) continue;
-            double c = projection[y];
-            if (c >= projection[y - 1] && c >= projection[y - 2] &&
-                c >= projection[y + 1] && c >= projection[y + 2])
+            var simpleRegions = new List<(int top, int bottom)>();
+            int lineHeight = regionHeight / estimatedLines;
+            for (int i = 0; i < estimatedLines; i++)
             {
-                peaks.Add(y);
+                int top = regionTop + i * lineHeight;
+                int bottom = (i == estimatedLines - 1) ? regionBottom : regionTop + (i + 1) * lineHeight;
+                if (bottom - top >= MinLineHeight)
+                    simpleRegions.Add((top, bottom));
             }
+            return simpleRegions;
         }
-        
-        // Merge peaks that are very close (same gap)
-        var mergedPeaks = new List<int>();
-        const int MinGapBetweenPeaks = 8;
-        foreach (var p in peaks)
-        {
-            if (mergedPeaks.Count == 0 || p - mergedPeaks[mergedPeaks.Count - 1] >= MinGapBetweenPeaks)
-                mergedPeaks.Add(p);
-        }
-        
-        if (mergedPeaks.Count == 0)
-            return new List<(int top, int bottom)> { (regionTop, regionBottom) };
-        
-        // Line boundaries: midpoints between consecutive peaks, plus region edges
+
+        // For larger regions, find optimal gaps near estimated boundaries
+        int targetLineHeight = regionHeight / estimatedLines;
         var boundaries = new List<int> { regionTop };
-        for (int i = 0; i < mergedPeaks.Count - 1; i++)
-            boundaries.Add((mergedPeaks[i] + mergedPeaks[i + 1]) / 2);
+
+        for (int i = 1; i < estimatedLines; i++)
+        {
+            int estimatedBoundary = regionTop + i * targetLineHeight;
+
+            // Search for the best gap (highest projection) within a window around the estimated boundary
+            int searchRadius = targetLineHeight / 3;
+            int searchStart = Math.Max(regionTop, estimatedBoundary - searchRadius);
+            int searchEnd = Math.Min(regionBottom, estimatedBoundary + searchRadius);
+
+            int bestGap = estimatedBoundary;
+            double bestValue = -1;
+
+            for (int y = searchStart; y < searchEnd && y < projection.Length; y++)
+            {
+                if (projection[y] > bestValue)
+                {
+                    bestValue = projection[y];
+                    bestGap = y;
+                }
+            }
+
+            boundaries.Add(bestGap);
+        }
+
         boundaries.Add(regionBottom);
-        
+
+        // Create regions from boundaries
         var regions = new List<(int top, int bottom)>();
         for (int i = 0; i < boundaries.Count - 1; i++)
         {
