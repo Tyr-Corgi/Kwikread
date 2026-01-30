@@ -1,0 +1,33 @@
+{
+  "final_cer": 1.052536955653216,
+  "final_wer": 1.3175355450236967,
+  "best_cer": 0.9460647223332002,
+  "total_steps": 645,
+  "training_history": [
+    {
+      "epoch": 1,
+      "loss": 7.8952396932498425,
+      "global_step": 129
+    },
+    {
+      "epoch": 2,
+      "loss": 6.361960876819699,
+      "global_step": 258
+    },
+    {
+      "epoch": 3,
+      "loss": 5.8323606927265494,
+      "global_step": 387
+    },
+    {
+      "epoch": 4,
+      "loss": 5.489897770475047,
+      "global_step": 516
+    },
+    {
+      "epoch": 5,
+      "loss": 4.862221442451773,
+      "global_step": 645
+    }
+  ]
+}

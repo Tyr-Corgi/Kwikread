@@ -1,0 +1,44 @@
+# Build artifacts
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Large model files (use Git LFS or external storage)
+*.safetensors
+*.onnx
+*.bin
+*.pt
+*.pth
+*.h5
+
+# Dataset files
+datasets/
+*.zip
+
+# IDE
+.idea/
+.vscode/
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test images
+*.jpg
+*.png
+*.jpeg
+!docs/*.png
+!docs/*.jpg
+
+# Temporary files
+*.log
+*.tmp
