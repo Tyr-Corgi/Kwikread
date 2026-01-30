@@ -6,14 +6,13 @@ namespace Kwikread;
 
 /// <summary>
 /// Segments a full-page image into individual text lines for OCR processing.
+/// Uses adaptive detection based on actual content - no fixed line height assumptions.
 /// </summary>
 public class LineSegmenter
 {
-    private const int MinLineHeight = 20;
-    private const int MaxLineHeight = 300;
-    private const double WhiteSpaceThreshold = 0.85; // 85% white = line boundary
-    private const int ProjectionSmoothWindow = 5;    // Moving average to reduce noise
-    private const double SingleRegionMaxFraction = 0.6; // If one region is >60% of page, subdivide it
+    private const int AbsoluteMinLineHeight = 15;  // Absolute minimum (tiny text)
+    private const int AbsoluteMaxLineHeight = 500; // Absolute maximum (huge text)
+    private const int ProjectionSmoothWindow = 3;  // Smaller window for finer detection
 
     /// <summary>
     /// Segments an image into individual text lines.
@@ -22,108 +21,258 @@ public class LineSegmenter
     public static List<Image<Rgb24>> SegmentLines(Image<Rgb24> image)
     {
         var lines = new List<Image<Rgb24>>();
-        
-        // Horizontal projection (white pixels per row)
+
+        // Calculate horizontal projection
         var rawProjection = CalculateHorizontalProjection(image);
         var projection = SmoothProjection(rawProjection);
-        
-        var lineRegions = DetectLineRegions(projection, image.Height);
-        var totalHeight = image.Height;
-        
-        // If we got 0 regions (whole page "white") or one huge region, subdivide by projection peaks
-        if (lineRegions.Count == 0)
-        {
-            Console.WriteLine("No regions from threshold. Subdividing full page by projection peaks...");
-            lineRegions = SplitRegionByPeaks(projection, 0, totalHeight, totalHeight);
-        }
-        else if (lineRegions.Count == 1)
-        {
-            var (top, bottom) = lineRegions[0];
-            if ((bottom - top) > totalHeight * SingleRegionMaxFraction)
-            {
-                Console.WriteLine("Single large region detected. Subdividing by projection peaks...");
-                lineRegions = SplitRegionByPeaks(projection, top, bottom, totalHeight);
-            }
-        }
-        
-        Console.WriteLine($"Detected {lineRegions.Count} potential text lines");
 
-        // Process regions, splitting oversized ones
-        var finalRegions = new List<(int top, int bottom)>();
+        // Detect line boundaries adaptively from the projection
+        var lineRegions = DetectLinesAdaptively(projection, image.Height);
+
+        Console.WriteLine($"Detected {lineRegions.Count} text lines");
+
+        // Extract line images
         foreach (var (top, bottom) in lineRegions)
         {
-            var lineHeight = bottom - top;
-
-            if (lineHeight < MinLineHeight)
-            {
-                Console.WriteLine($"  Skipping tiny region {top}-{bottom} (height {lineHeight}px)");
-                continue;
-            }
-
-            if (lineHeight > MaxLineHeight)
-            {
-                // Try to split oversized regions by projection peaks
-                Console.WriteLine($"  Splitting oversized region {top}-{bottom} (height {lineHeight}px)...");
-                var subRegions = SplitRegionByPeaks(projection, top, bottom, totalHeight);
-                foreach (var sub in subRegions)
-                {
-                    var subHeight = sub.bottom - sub.top;
-                    if (subHeight >= MinLineHeight && subHeight <= MaxLineHeight)
-                    {
-                        finalRegions.Add(sub);
-                        Console.WriteLine($"    Sub-region: {sub.top}-{sub.bottom} ({subHeight}px)");
-                    }
-                    else if (subHeight > MaxLineHeight)
-                    {
-                        // Still too large - use fixed chunking for this region
-                        Console.WriteLine($"    Sub-region {sub.top}-{sub.bottom} still too large ({subHeight}px), chunking...");
-                        var chunkHeight = MaxLineHeight / 2;
-                        for (int y = sub.top; y < sub.bottom; y += chunkHeight - 10)
-                        {
-                            var endY = Math.Min(y + chunkHeight, sub.bottom);
-                            if (endY - y >= MinLineHeight)
-                            {
-                                finalRegions.Add((y, endY));
-                                Console.WriteLine($"    Chunk: {y}-{endY} ({endY - y}px)");
-                            }
-                        }
-                    }
-                }
-            }
-            else
-            {
-                finalRegions.Add((top, bottom));
-            }
-        }
-
-        // Extract final line images (no padding - peaks already define boundaries)
-        foreach (var (top, bottom) in finalRegions)
-        {
             var cropHeight = bottom - top;
+            if (cropHeight < AbsoluteMinLineHeight) continue;
 
             var lineImage = image.Clone(ctx => ctx.Crop(new Rectangle(0, top, image.Width, cropHeight)));
             lines.Add(lineImage);
 
-            Console.WriteLine($"  Extracted line {lines.Count}: y={top}-{bottom} ({cropHeight}px)");
+            Console.WriteLine($"  Line {lines.Count}: y={top}-{bottom} ({cropHeight}px)");
         }
 
         if (lines.Count == 0)
         {
-            Console.WriteLine("Projection method failed. Using adaptive fixed-height chunking...");
-            return SegmentLinesFixedHeight(image);
+            Console.WriteLine("No lines detected. Processing entire image as single region.");
+            lines.Add(image.Clone());
         }
 
         return lines;
     }
 
     /// <summary>
-    /// Smooth projection with a moving average to reduce single-row noise.
+    /// Adaptively detect text lines by finding gaps (peaks) in the horizontal projection.
+    /// No fixed assumptions about line height - detects from actual content.
+    /// </summary>
+    private static List<(int top, int bottom)> DetectLinesAdaptively(double[] projection, int height)
+    {
+        // Step 1: Find all significant gaps (local maxima in projection)
+        var gaps = FindSignificantGaps(projection, height);
+
+        if (gaps.Count == 0)
+        {
+            // No clear gaps found - treat entire image as one region
+            return new List<(int top, int bottom)> { (0, height) };
+        }
+
+        // Step 2: Analyze gap spacing to understand the line structure
+        var gapSpacings = new List<int>();
+        for (int i = 1; i < gaps.Count; i++)
+        {
+            gapSpacings.Add(gaps[i] - gaps[i - 1]);
+        }
+
+        // Detect the typical line height from gap spacing
+        int detectedLineHeight = gapSpacings.Count > 0
+            ? (int)gapSpacings.OrderBy(x => x).ElementAt(gapSpacings.Count / 2) // Median
+            : height / 10;
+
+        Console.WriteLine($"Detected line height: ~{detectedLineHeight}px (from {gaps.Count} gaps)");
+
+        // Step 3: Build line regions from gaps
+        var regions = new List<(int top, int bottom)>();
+
+        // Add region before first gap (if there's content there)
+        if (gaps[0] > AbsoluteMinLineHeight)
+        {
+            AddRegionsFromRange(regions, projection, 0, gaps[0], detectedLineHeight);
+        }
+
+        // Add regions between consecutive gaps
+        for (int i = 0; i < gaps.Count - 1; i++)
+        {
+            int regionTop = gaps[i];
+            int regionBottom = gaps[i + 1];
+            int regionHeight = regionBottom - regionTop;
+
+            if (regionHeight < AbsoluteMinLineHeight)
+                continue;
+
+            // If region is much larger than detected line height, subdivide it
+            if (regionHeight > detectedLineHeight * 1.8 && detectedLineHeight > AbsoluteMinLineHeight)
+            {
+                AddRegionsFromRange(regions, projection, regionTop, regionBottom, detectedLineHeight);
+            }
+            else
+            {
+                regions.Add((regionTop, regionBottom));
+            }
+        }
+
+        // Add region after last gap (if there's content there)
+        if (height - gaps[gaps.Count - 1] > AbsoluteMinLineHeight)
+        {
+            AddRegionsFromRange(regions, projection, gaps[gaps.Count - 1], height, detectedLineHeight);
+        }
+
+        return regions;
+    }
+
+    /// <summary>
+    /// Find significant gaps (whitespace between text lines) in the projection.
+    /// Uses adaptive thresholding based on the projection's characteristics.
+    /// </summary>
+    private static List<int> FindSignificantGaps(double[] projection, int height)
+    {
+        if (projection.Length == 0) return new List<int>();
+
+        // Sort projection values to find percentiles
+        var sorted = projection.OrderBy(x => x).ToArray();
+        double p25 = sorted[(int)(sorted.Length * 0.25)];
+        double p50 = sorted[(int)(sorted.Length * 0.50)]; // median
+        double p75 = sorted[(int)(sorted.Length * 0.75)];
+        double min = sorted[0];
+        double max = sorted[sorted.Length - 1];
+        double range = max - min;
+
+        // If there's very little variation, no clear lines exist
+        if (range < 0.05)
+        {
+            Console.WriteLine("Low projection variance - unclear line structure");
+            return new List<int>();
+        }
+
+        // Gap threshold: between median and 75th percentile
+        // This adapts to the actual distribution of whitespace in the image
+        double gapThreshold = p50 + (p75 - p50) * 0.5;
+
+        // Find local maxima (peaks) that represent gaps
+        var candidates = new List<(int y, double value, double prominence)>();
+        const int WindowSize = 4;
+
+        for (int y = WindowSize; y < height - WindowSize; y++)
+        {
+            double val = projection[y];
+            if (val < gapThreshold) continue;
+
+            // Check if local maximum
+            bool isMax = true;
+            double minNeighbor = double.MaxValue;
+            for (int dy = -WindowSize; dy <= WindowSize; dy++)
+            {
+                if (dy != 0)
+                {
+                    if (projection[y + dy] > val)
+                        isMax = false;
+                    minNeighbor = Math.Min(minNeighbor, projection[y + dy]);
+                }
+            }
+
+            if (isMax)
+            {
+                // Prominence = how much higher than neighbors
+                double prominence = val - minNeighbor;
+                candidates.Add((y, val, prominence));
+            }
+        }
+
+        // Filter by prominence (keep peaks that stand out)
+        double avgProminence = candidates.Count > 0 ? candidates.Average(c => c.prominence) : 0;
+        var significantCandidates = candidates
+            .Where(c => c.prominence >= avgProminence * 0.3)
+            .OrderByDescending(c => c.value)
+            .ToList();
+
+        // Keep well-spaced gaps
+        var gaps = new List<int>();
+        int minGapDistance = Math.Max(15, height / 100); // At least 15px or 1% of height
+
+        foreach (var (y, value, prominence) in significantCandidates)
+        {
+            bool tooClose = gaps.Any(existing => Math.Abs(y - existing) < minGapDistance);
+            if (!tooClose)
+                gaps.Add(y);
+        }
+
+        gaps.Sort();
+        return gaps;
+    }
+
+    /// <summary>
+    /// Subdivide a range into lines based on detected line height.
+    /// Uses projection to find optimal boundaries.
+    /// </summary>
+    private static void AddRegionsFromRange(
+        List<(int top, int bottom)> regions,
+        double[] projection,
+        int rangeTop,
+        int rangeBottom,
+        int targetLineHeight)
+    {
+        int rangeHeight = rangeBottom - rangeTop;
+
+        // If range is small enough, add as single region
+        if (rangeHeight <= targetLineHeight * 1.5 || targetLineHeight < AbsoluteMinLineHeight)
+        {
+            if (rangeHeight >= AbsoluteMinLineHeight)
+                regions.Add((rangeTop, rangeBottom));
+            return;
+        }
+
+        // Estimate number of lines in this range
+        int numLines = Math.Max(1, (int)Math.Round((double)rangeHeight / targetLineHeight));
+        int lineHeight = rangeHeight / numLines;
+
+        // Find optimal boundaries using projection
+        var boundaries = new List<int> { rangeTop };
+
+        for (int i = 1; i < numLines; i++)
+        {
+            int estimatedBoundary = rangeTop + i * lineHeight;
+
+            // Search for best gap near estimated boundary
+            int searchRadius = Math.Max(5, lineHeight / 4);
+            int searchStart = Math.Max(rangeTop, estimatedBoundary - searchRadius);
+            int searchEnd = Math.Min(rangeBottom, estimatedBoundary + searchRadius);
+
+            int bestY = estimatedBoundary;
+            double bestVal = -1;
+
+            for (int y = searchStart; y < searchEnd && y < projection.Length; y++)
+            {
+                if (projection[y] > bestVal)
+                {
+                    bestVal = projection[y];
+                    bestY = y;
+                }
+            }
+
+            boundaries.Add(bestY);
+        }
+
+        boundaries.Add(rangeBottom);
+
+        // Create regions from boundaries
+        for (int i = 0; i < boundaries.Count - 1; i++)
+        {
+            int top = boundaries[i];
+            int bottom = boundaries[i + 1];
+            if (bottom - top >= AbsoluteMinLineHeight)
+                regions.Add((top, bottom));
+        }
+    }
+
+    /// <summary>
+    /// Smooth projection with a moving average to reduce noise.
     /// </summary>
     private static double[] SmoothProjection(double[] projection)
     {
         if (projection.Length == 0) return projection;
         var half = ProjectionSmoothWindow / 2;
         var result = new double[projection.Length];
+
         for (int i = 0; i < projection.Length; i++)
         {
             double sum = 0;
@@ -139,148 +288,48 @@ public class LineSegmenter
     }
 
     /// <summary>
-    /// Split a region into lines using a hybrid approach:
-    /// 1. Estimate line count from region height
-    /// 2. Find the best gap (whitespace peak) near each estimated boundary
-    /// </summary>
-    private static List<(int top, int bottom)> SplitRegionByPeaks(double[] projection, int regionTop, int regionBottom, int totalHeight)
-    {
-        int regionHeight = regionBottom - regionTop;
-
-        // Estimate typical line height (handwriting is usually 50-80px at 2000px width)
-        const int TypicalLineHeight = 70;
-        int estimatedLines = Math.Max(1, (regionHeight + TypicalLineHeight / 2) / TypicalLineHeight);
-
-        // If region is small enough for just a few lines, use simple division
-        if (estimatedLines <= 2)
-        {
-            var simpleRegions = new List<(int top, int bottom)>();
-            int lineHeight = regionHeight / estimatedLines;
-            for (int i = 0; i < estimatedLines; i++)
-            {
-                int top = regionTop + i * lineHeight;
-                int bottom = (i == estimatedLines - 1) ? regionBottom : regionTop + (i + 1) * lineHeight;
-                if (bottom - top >= MinLineHeight)
-                    simpleRegions.Add((top, bottom));
-            }
-            return simpleRegions;
-        }
-
-        // For larger regions, find optimal gaps near estimated boundaries
-        int targetLineHeight = regionHeight / estimatedLines;
-        var boundaries = new List<int> { regionTop };
-
-        for (int i = 1; i < estimatedLines; i++)
-        {
-            int estimatedBoundary = regionTop + i * targetLineHeight;
-
-            // Search for the best gap (highest projection) within a window around the estimated boundary
-            int searchRadius = targetLineHeight / 3;
-            int searchStart = Math.Max(regionTop, estimatedBoundary - searchRadius);
-            int searchEnd = Math.Min(regionBottom, estimatedBoundary + searchRadius);
-
-            int bestGap = estimatedBoundary;
-            double bestValue = -1;
-
-            for (int y = searchStart; y < searchEnd && y < projection.Length; y++)
-            {
-                if (projection[y] > bestValue)
-                {
-                    bestValue = projection[y];
-                    bestGap = y;
-                }
-            }
-
-            boundaries.Add(bestGap);
-        }
-
-        boundaries.Add(regionBottom);
-
-        // Create regions from boundaries
-        var regions = new List<(int top, int bottom)>();
-        for (int i = 0; i < boundaries.Count - 1; i++)
-        {
-            int top = boundaries[i], bottom = boundaries[i + 1];
-            if (bottom - top >= MinLineHeight)
-                regions.Add((top, bottom));
-        }
-        return regions;
-    }
-
-    /// <summary>
-    /// Fallback: Split image into chunks. Uses adaptive height based on image size
-    /// so we get a reasonable number of lines (assume ~50px per line + spacing).
-    /// </summary>
-    private static List<Image<Rgb24>> SegmentLinesFixedHeight(Image<Rgb24> image)
-    {
-        var lines = new List<Image<Rgb24>>();
-        const int TypicalLineWithSpacing = 70; // px per line + gap (handwriting ~50–100)
-        int estimatedLines = Math.Max(1, image.Height / TypicalLineWithSpacing);
-        int chunkHeight = (image.Height + estimatedLines - 1) / estimatedLines;
-        chunkHeight = Math.Clamp(chunkHeight, 40, 250);
-        int overlap = Math.Max(5, chunkHeight / 5);
-        
-        for (int y = 0; y < image.Height; y += Math.Max(1, chunkHeight - overlap))
-        {
-            var cropHeight = Math.Min(chunkHeight, image.Height - y);
-            
-            if (cropHeight < MinLineHeight)
-                break;
-            
-            var chunk = image.Clone(ctx => ctx.Crop(new Rectangle(0, y, image.Width, cropHeight)));
-            lines.Add(chunk);
-            
-            Console.WriteLine($"  Extracted chunk {lines.Count}: y={y}-{y + cropHeight} ({cropHeight}px)");
-        }
-        
-        return lines;
-    }
-
-    /// <summary>
-    /// Calculate horizontal projection (sum of white pixels per row).
-    /// Higher values = more white space = likely line boundary.
+    /// Calculate horizontal projection (ratio of white pixels per row).
+    /// Higher values = more whitespace = likely gap between lines.
     /// </summary>
     private static double[] CalculateHorizontalProjection(Image<Rgb24> image)
     {
         var projection = new double[image.Height];
-        
-        // Apply Otsu's method for adaptive thresholding
-        var threshold = CalculateOtsuThreshold(image);
-        Console.WriteLine($"Using brightness threshold: {threshold:F2}");
-        
+
+        // Calculate adaptive threshold
+        var threshold = CalculateAdaptiveThreshold(image);
+        Console.WriteLine($"Brightness threshold: {threshold:F2}");
+
         for (int y = 0; y < image.Height; y++)
         {
             int whitePixels = 0;
-            
+
             for (int x = 0; x < image.Width; x++)
             {
                 var pixel = image[x, y];
                 var brightness = (pixel.R + pixel.G + pixel.B) / 3.0 / 255.0;
-                
-                // Consider pixel as "white" if brightness > threshold
+
                 if (brightness > threshold)
-                {
                     whitePixels++;
-                }
             }
-            
+
             projection[y] = (double)whitePixels / image.Width;
         }
-        
+
         return projection;
     }
 
     /// <summary>
-    /// Calculate adaptive threshold using Otsu's method (simplified).
-    /// Returns a brightness threshold between 0 and 1.
+    /// Calculate adaptive brightness threshold to separate text from background.
     /// </summary>
-    private static double CalculateOtsuThreshold(Image<Rgb24> image)
+    private static double CalculateAdaptiveThreshold(Image<Rgb24> image)
     {
-        // Sample every 10th pixel for speed
+        // Sample pixels for histogram
         var samples = new List<double>();
-        for (int y = 0; y < image.Height; y += 10)
+        int step = Math.Max(1, Math.Min(image.Width, image.Height) / 100);
+
+        for (int y = 0; y < image.Height; y += step)
         {
-            for (int x = 0; x < image.Width; x += 10)
+            for (int x = 0; x < image.Width; x += step)
             {
                 var pixel = image[x, y];
                 var brightness = (pixel.R + pixel.G + pixel.B) / 3.0 / 255.0;
@@ -288,133 +337,45 @@ public class LineSegmenter
             }
         }
 
-        samples.Sort();
-        var median = samples[samples.Count / 2];
+        if (samples.Count == 0) return 0.5;
 
-        // Find actual separation between text and background
-        // Use the gap between dark (text) and light (background) pixels
+        samples.Sort();
+
+        // Find the gap between dark (text) and light (background)
         var darkPixels = samples.Where(b => b < 0.5).ToList();
         var lightPixels = samples.Where(b => b >= 0.5).ToList();
 
-        double threshold;
         if (darkPixels.Count > 0 && lightPixels.Count > 0)
         {
-            // Threshold is midpoint between darkest background and lightest text
             var maxDark = darkPixels.Max();
             var minLight = lightPixels.Min();
-            threshold = (maxDark + minLight) / 2;
-        }
-        else
-        {
-            // Fallback: use median with smaller bias
-            threshold = median;
+            return (maxDark + minLight) / 2;
         }
 
-        // Clamp to reasonable range - threshold should separate text from background
-        // For most handwriting: text is dark (<0.5), background is light (>0.7)
-        return Math.Clamp(threshold, 0.4, 0.85);
+        // Fallback to median
+        return samples[samples.Count / 2];
     }
 
     /// <summary>
-    /// Detect line regions from horizontal projection.
-    /// Returns list of (top, bottom) y-coordinates for each line.
-    /// </summary>
-    private static List<(int top, int bottom)> DetectLineRegions(double[] projection, int height)
-    {
-        var regions = new List<(int top, int bottom)>();
-        bool inTextRegion = false;
-        int regionStart = 0;
-        
-        for (int y = 0; y < height; y++)
-        {
-            bool isWhiteSpace = projection[y] > WhiteSpaceThreshold;
-            
-            if (!inTextRegion && !isWhiteSpace)
-            {
-                // Start of text region
-                inTextRegion = true;
-                regionStart = y;
-            }
-            else if (inTextRegion && isWhiteSpace)
-            {
-                // End of text region
-                inTextRegion = false;
-                regions.Add((regionStart, y));
-            }
-        }
-        
-        // Handle case where text extends to bottom of image
-        if (inTextRegion)
-        {
-            regions.Add((regionStart, height));
-        }
-        
-        // Merge nearby regions (likely same line)
-        return MergeNearbyRegions(regions);
-    }
-
-    /// <summary>
-    /// Merge regions that are very close together (likely same line of text).
-    /// Uses a capped threshold to prevent runaway merging.
-    /// </summary>
-    private static List<(int top, int bottom)> MergeNearbyRegions(List<(int top, int bottom)> regions)
-    {
-        if (regions.Count == 0) return regions;
-
-        var merged = new List<(int top, int bottom)>();
-        var current = regions[0];
-
-        // Cap merge threshold to prevent runaway merging of large regions
-        const int MaxMergeThreshold = 25;
-
-        for (int i = 1; i < regions.Count; i++)
-        {
-            var next = regions[i];
-            var gap = next.top - current.bottom;
-            var currentHeight = current.bottom - current.top;
-
-            // If gap is small relative to line height, merge the regions
-            // But cap the threshold to prevent creating giant merged regions
-            var mergeThreshold = Math.Min(MaxMergeThreshold, Math.Max(8, currentHeight / 4));
-
-            if (gap < mergeThreshold)
-            {
-                current = (current.top, next.bottom);
-            }
-            else
-            {
-                merged.Add(current);
-                current = next;
-            }
-        }
-
-        merged.Add(current);
-        return merged;
-    }
-
-    /// <summary>
-    /// Preprocess image to improve line detection.
-    /// - Resize if too large
-    /// - Increase contrast
-    /// - Optional deskewing
+    /// Preprocess image before line detection.
     /// </summary>
     public static Image<Rgb24> PreprocessImage(Image<Rgb24> image)
     {
         var processed = image.Clone();
-        
-        // Resize if image is very large (speeds up processing)
+
+        // Resize if very large
         const int MaxWidth = 2000;
         if (processed.Width > MaxWidth)
         {
             var scale = (double)MaxWidth / processed.Width;
             var newHeight = (int)(processed.Height * scale);
             processed.Mutate(x => x.Resize(MaxWidth, newHeight));
-            Console.WriteLine($"Resized image to {MaxWidth}x{newHeight}");
+            Console.WriteLine($"Resized to {MaxWidth}x{newHeight}");
         }
-        
-        // Increase contrast to make text more distinct
-        processed.Mutate(x => x.Contrast(1.5f));
-        
+
+        // Enhance contrast
+        processed.Mutate(x => x.Contrast(1.4f));
+
         return processed;
     }
 }
