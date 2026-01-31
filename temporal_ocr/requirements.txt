@@ -1,0 +1,25 @@
+# Temporal OCR System Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+Pillow>=9.0.0
+
+# OCR Engines (PaddleOCR preferred)
+paddlepaddle>=2.4.0  # CPU version; use paddlepaddle-gpu for GPU
+paddleocr>=2.6.0
+
+# Alternative OCR (fallback)
+easyocr>=1.6.0
+
+# Text processing and alignment
+python-Levenshtein>=0.20.0
+rapidfuzz>=2.0.0
+
+# Clustering for line grouping
+scikit-learn>=1.0.0
+scipy>=1.7.0
+
+# CLI and utilities
+tqdm>=4.60.0
