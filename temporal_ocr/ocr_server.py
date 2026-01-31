@@ -89,6 +89,13 @@ class OCRServer:
             self.strike_detector = None
             self.filter_strike = None
 
+        # Grocery corrector
+        try:
+            from grocery_corrector import correct_grocery_text
+            self.correct_grocery = correct_grocery_text
+        except:
+            self.correct_grocery = None
+
         t1 = time.time()
         print(f"[Server] Models loaded in {t1-t0:.1f}s (device: {self.device})")
         self._loaded = True
@@ -212,28 +219,50 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 lines[label] = []
             lines[label].append((x, y, w, h, text, conf))
 
-        # Sort lines top to bottom, words left to right
+        # Sort lines top to bottom, split by large x-gaps (columns)
         sorted_lines = []
         line_confidences = []
+        h_img, w_img = image.shape[:2]
+        column_gap_threshold = w_img * 0.15  # 15% of image width = column gap (~160px for 1080w)
+
         for label in sorted(lines.keys(), key=lambda l: np.mean([b[1] for b in lines[l]])):
             line_boxes = sorted(lines[label], key=lambda b: b[0])
 
-            # Merge boxes into line bbox
-            xs = [b[0] for b in line_boxes]
-            ys = [b[1] for b in line_boxes]
-            x2s = [b[0] + b[2] for b in line_boxes]
-            y2s = [b[1] + b[3] for b in line_boxes]
+            # Split line by large x-gaps (detect columns)
+            split_lines = []
+            current_group = [line_boxes[0]]
 
-            line_bbox = (min(xs), min(ys), max(x2s) - min(xs), max(y2s) - min(ys))
-            sorted_lines.append((line_bbox, line_boxes))
+            for i in range(1, len(line_boxes)):
+                prev_box = line_boxes[i - 1]
+                curr_box = line_boxes[i]
+                gap = curr_box[0] - (prev_box[0] + prev_box[2])  # x gap between boxes
 
-            # Average confidence for the line
-            avg_conf = np.mean([b[5] for b in line_boxes])
-            line_confidences.append(avg_conf)
+                if gap > column_gap_threshold:
+                    # Large gap - start new line (different column)
+                    split_lines.append(current_group)
+                    current_group = [curr_box]
+                else:
+                    current_group.append(curr_box)
+
+            split_lines.append(current_group)
+
+            # Add each split group as a separate line
+            for group_boxes in split_lines:
+                # Merge boxes into line bbox
+                xs = [b[0] for b in group_boxes]
+                ys = [b[1] for b in group_boxes]
+                x2s = [b[0] + b[2] for b in group_boxes]
+                y2s = [b[1] + b[3] for b in group_boxes]
+
+                line_bbox = (min(xs), min(ys), max(x2s) - min(xs), max(y2s) - min(ys))
+                sorted_lines.append((line_bbox, group_boxes))
+
+                # Average confidence for the line
+                avg_conf = np.mean([b[5] for b in group_boxes])
+                line_confidences.append(avg_conf)
 
         # Crop lines with padding
         padding = 12
-        h_img, w_img = image.shape[:2]
         crops = []
         crop_bboxes = []
 
@@ -293,12 +322,21 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                     print(f"[Verify] Line {i}: '{original}' -> '{text}'")
                 verified = True
 
+            # Apply grocery item correction
+            corrected = False
+            if self.correct_grocery:
+                original = text
+                text, corrected, score = self.correct_grocery(text)
+                if corrected:
+                    print(f"[Correct] Line {i}: '{original}' -> '{text}' ({score:.2f})")
+
             results.append({
                 "index": i,
                 "bbox": [x, y, w, h],
                 "text": text.strip(),
                 "confidence": round(confidence, 3),
-                "verified": verified
+                "verified": verified,
+                "corrected": corrected
             })
 
         t5 = time.time()
