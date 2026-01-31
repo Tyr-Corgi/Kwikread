@@ -1,15 +1,25 @@
 # Temporal OCR System
 
-A robust OCR system designed for real-world conditions: motion blur, varying angles, partial occlusions, and uneven lighting. Instead of relying on single-frame OCR, this system aggregates results across multiple frames for stable, reliable transcriptions.
+A handwritten grocery list OCR system optimized for real-world conditions. Uses TrOCR for handwriting recognition with optional Vision LLM verification to correct recognition errors.
 
-## Features
+## Current Status
 
-- **Temporal Aggregation**: Combines OCR results from 5-15 frames for stable output
-- **Per-Line Cropping**: Detects and crops individual text lines before OCR
-- **Quality-Based Frame Selection**: Automatically rejects blurry/dark frames
-- **Consensus Voting**: Character-level voting with edit-distance alignment
-- **Automatic Deskewing**: Corrects tilted text before recognition
-- **Multiple OCR Engines**: PaddleOCR (preferred), EasyOCR, or Tesseract
+**Tested Accuracy: 81% (17/21 items correct)** on handwritten grocery lists.
+
+### What Works Well
+- Handwriting recognition via TrOCR (microsoft/trocr-large-handwritten)
+- Two-column layout detection and separation
+- Vision LLM verification corrects common TrOCR mistakes:
+  - "out milk" → "oat milk"
+  - "problem Bars" → "PROTEIN BARS"
+  - "Apple since" → "apple sauce"
+  - "Trail unit" → "Trail Mix"
+  - Truncated text like "Cheese" → "cheese sticks"
+
+### Known Limitations
+- Some words still misread ("french fries" → "French tries")
+- Crossed-out/scribbled text not yet filtered
+- Requires Ollama with LLaVA for vision verification
 
 ## Installation
 
@@ -18,49 +28,30 @@ cd temporal_ocr
 pip install -r requirements.txt
 ```
 
-### OCR Engine Notes
-
-- **PaddleOCR** (recommended): Best for handwriting, includes text detection
-  ```bash
-  pip install paddlepaddle paddleocr
-  ```
-  Models download automatically on first use (~100MB)
-
-- **EasyOCR** (alternative): Good fallback, slightly slower
-  ```bash
-  pip install easyocr
-  ```
-
-- **Tesseract** (fallback only): Weak for handwriting
-  ```bash
-  brew install tesseract  # macOS
-  pip install pytesseract
-  ```
-
-## Usage
-
-### Temporal Mode (Video or Frame Folder)
-
-Process a video file:
+### For Vision Verification (Recommended)
 ```bash
-python temporal_ocr.py --input video.mp4 --out_dir results --engine paddle
+# Install Ollama
+brew install ollama
+
+# Pull LLaVA model (4.7GB)
+ollama pull llava:7b
 ```
 
-Process a folder of sequential frames:
+## Quick Start
+
+### Basic Usage (TrOCR only)
 ```bash
-python temporal_ocr.py --input frames/ --out_dir results --max_frames 20 --use_consensus true
+python temporal_ocr.py --input grocery_list.jpg --out_dir results --mode single --engine trocr
 ```
 
-### Single Image Mode
-
-Process a single image:
+### With Vision Verification (Recommended)
 ```bash
-python temporal_ocr.py --input photo.jpg --out_dir results --mode single
+python temporal_ocr.py --input grocery_list.jpg --out_dir results --mode single --engine trocr --vision_verify
 ```
 
-Process a folder of individual images:
+### Process Video (Temporal Mode)
 ```bash
-python temporal_ocr.py --input images/ --out_dir results --mode single
+python temporal_ocr.py --input video.mp4 --out_dir results --engine trocr
 ```
 
 ## Command Line Options
@@ -70,158 +61,101 @@ python temporal_ocr.py --input images/ --out_dir results --mode single
 | `--input, -i` | (required) | Path to video, image, or folder |
 | `--out_dir, -o` | `out` | Output directory |
 | `--mode, -m` | `auto` | `temporal`, `single`, or `auto` |
-| `--engine, -e` | `paddle` | OCR engine: `paddle`, `easyocr`, `tesseract` |
-| `--lang, -l` | `en` | Language code |
-| `--max_frames` | `15` | Max frames for temporal aggregation |
-| `--min_frames` | `5` | Min frames needed |
-| `--use_consensus` | `true` | Enable consensus voting |
-| `--blur_threshold` | `100.0` | Blur detection threshold (higher = stricter) |
+| `--engine, -e` | `paddle` | OCR engine: `paddle`, `easyocr`, `tesseract`, `trocr` |
+| `--vision_verify` | off | Enable vision LLM verification |
+| `--vision_model` | `llava:7b` | Ollama vision model to use |
+| `--vision_mode` | `verify_all` | `verify_all`, `verify_low`, or `primary` |
 | `--padding` | `12` | Padding around line crops (pixels) |
-| `--adaptive_thresh` | `false` | Use adaptive thresholding |
 | `--no_deskew` | `false` | Disable automatic deskewing |
 
-## Outputs
+## Output Format
 
 ```
-out/
-├── annotated/           # Images with detected line boxes drawn
-│   ├── frame_0000.png
-│   └── frame_0001.png
-├── crops/               # Individual line crops per frame
-│   ├── frame_0000/
-│   │   ├── line_00.png
-│   │   └── line_01.png
-│   └── frame_0001/
-├── frame_results.json   # Per-frame detection results
-└── aggregated_results.json  # Final temporal aggregation
+results/
+├── annotated/              # Images with detected line boxes
+│   └── grocery_list.png
+├── crops/                  # Individual line crops
+│   └── grocery_list/
+│       ├── line_00.png
+│       ├── line_01.png
+│       └── ...
+└── grocery_list_result.json
 ```
 
-### JSON Output Format
-
-**frame_results.json**:
-```json
-[
-  {
-    "frame_index": 0,
-    "quality_score": 245.7,
-    "is_valid": true,
-    "skew_angle": -2.1,
-    "lines": [
-      {
-        "index": 0,
-        "bbox": [50, 100, 400, 35],
-        "text": "Milk",
-        "confidence": 0.95
-      }
-    ]
-  }
-]
-```
-
-**aggregated_results.json**:
+### JSON Output
 ```json
 {
-  "full_text": "Milk\nBread\nEggs",
-  "frames_processed": 30,
-  "frames_used": 12,
-  "aggregation_method": "consensus",
+  "image_path": "grocery_list.jpg",
+  "full_text": "Rice\noat milk\nPROTEIN BARS\n...",
+  "skew_angle": 0.7,
   "lines": [
     {
-      "line_index": 0,
-      "final_text": "Milk",
-      "confidence": 0.92,
-      "contributing_frames": [0, 2, 5, 7, 9]
+      "index": 0,
+      "bbox": [113, 509, 146, 66],
+      "text": "Rice",
+      "confidence": 0.99,
+      "crop_path": "results/crops/grocery_list/line_00.png"
     }
   ]
 }
 ```
 
-## Tuning Guide
+## Architecture
 
-### For Blurry Frames
-- **Lower `--blur_threshold`** to accept more frames (default: 100)
-- Try values 50-80 if too many frames are rejected
+### OCR Pipeline
+1. **Text Detection**: EasyOCR detects word bounding boxes
+2. **Line Grouping**: DBSCAN clusters words by Y-position, splits columns by X-gaps
+3. **Line Cropping**: Each line cropped with padding for OCR
+4. **TrOCR Recognition**: Handwriting-optimized transformer model
+5. **Vision Verification** (optional): LLaVA corrects semantic errors
 
-### For Low Contrast / Handwriting
-- Add `--adaptive_thresh` for very faint text
-- Increase `--padding` to 16-20 for thicker strokes
+### Vision Verification Strategy
+The vision verification module uses LLaVA to verify TrOCR output:
+- If vision confidence > 0.9 and texts differ: trust vision (semantic understanding)
+- If texts are 95%+ similar: both agree, use TrOCR
+- Otherwise: use higher confidence result
 
-### For Tilted Text
-- Deskewing is automatic; disable with `--no_deskew` if causing issues
+This catches errors where TrOCR produces phonetically similar but semantically wrong text (e.g., "out milk" vs "oat milk").
 
-### For Non-English Text
-- Use `--lang` with appropriate code: `ch` (Chinese), `japan`, `korean`, etc.
-- PaddleOCR supports 80+ languages
+## Supported OCR Engines
 
-### For Very Short Lists (<5 lines)
-- Use `--mode single` instead of temporal
-- Or lower `--min_frames` to 3
+| Engine | Best For | Notes |
+|--------|----------|-------|
+| `trocr` | Handwriting | Recommended for grocery lists |
+| `paddle` | Printed text | Good general-purpose |
+| `easyocr` | Mixed content | Slower but robust |
+| `tesseract` | Typed text only | Not recommended for handwriting |
 
-## How It Works
+## Testing Vision OCR
 
-### 1. Frame Quality Assessment
-Each frame is scored on:
-- **Blur metric**: Variance of Laplacian (sharp edges = higher score)
-- **Brightness**: Rejects too dark (<30) or too bright (>225)
-- **Text presence**: Must detect at least 1 text region
-
-### 2. Preprocessing Pipeline
-- Grayscale conversion
-- Illumination normalization (removes shadows)
-- CLAHE contrast enhancement
-- Bilateral filter denoising (preserves edges)
-- Optional adaptive thresholding
-
-### 3. Line Detection
-- Uses PaddleOCR's DBNet for text region detection
-- Groups word boxes into lines using DBSCAN on y-centers
-- Handles multi-column and tilted text
-
-### 4. Cross-Frame Line Matching
-- Matches lines by normalized y-position (15% tolerance)
-- Uses text similarity as secondary signal
-- Hungarian algorithm for optimal assignment
-
-### 5. Temporal Aggregation
-Two strategies:
-1. **Best-of-N**: Select highest-confidence recognition per line
-2. **Consensus Voting**: Character-level weighted voting
-   - Aligns candidate strings using edit distance
-   - Confidence-weighted character voting
-   - Falls back to best-of-N if consensus is weak
-
-## Performance Tips
-
-- For fastest processing, use `--engine paddle` with GPU:
-  ```bash
-  pip install paddlepaddle-gpu
-  ```
-
-- For memory-constrained systems, use `--engine easyocr`
-
-- Limit frames with `--max_frames 10` for faster processing
+To test vision model accuracy on crop images:
+```bash
+python test_vision_ocr.py llava:7b
+```
 
 ## Troubleshooting
 
-### "No OCR engine available"
-Install at least one OCR engine:
+### "Vision verification disabled"
+Ensure Ollama is running with LLaVA:
 ```bash
-pip install paddlepaddle paddleocr  # Recommended
-# OR
-pip install easyocr
-```
-
-### "Too many frames rejected"
-Lower the blur threshold:
-```bash
-python temporal_ocr.py --input video.mp4 --blur_threshold 50
+ollama serve  # In one terminal
+ollama pull llava:7b  # If not already pulled
 ```
 
 ### Poor handwriting recognition
-Try adaptive thresholding:
-```bash
-python temporal_ocr.py --input video.mp4 --adaptive_thresh
-```
+- Use `--engine trocr` (not paddle/easyocr)
+- Enable `--vision_verify` for correction
+- Increase `--padding` to 16-20 for thick strokes
+
+### Columns merging together
+The system automatically detects columns with gaps > 100px. If columns are closer, they may merge.
 
 ### Wrong reading order
-Check the annotated output images to verify line detection. Adjust `--padding` if lines are merging.
+Check `annotated/` images to verify line detection. The system reads top-to-bottom within each column.
+
+## Requirements
+
+- Python 3.8+
+- PyTorch (for TrOCR)
+- Ollama + LLaVA (for vision verification)
+- See `requirements.txt` for full list
