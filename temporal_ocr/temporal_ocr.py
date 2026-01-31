@@ -1647,6 +1647,17 @@ class LineCropOCRPipeline:
             except Exception as e:
                 print(f"[Warning] Vision verification disabled: {e}")
 
+        # Strikethrough detection (always enabled)
+        try:
+            from strikethrough_filter import StrikethroughDetector, filter_strikethrough_text
+            self.strikethrough_detector = StrikethroughDetector()
+            self.filter_strikethrough = filter_strikethrough_text
+            print("[OCR] Strikethrough detection enabled")
+        except Exception as e:
+            self.strikethrough_detector = None
+            self.filter_strikethrough = None
+            print(f"[Warning] Strikethrough detection disabled: {e}")
+
     def process_image(
         self,
         image_path: str,
@@ -1738,6 +1749,16 @@ class LineCropOCRPipeline:
                 line_text = result.verified_text
                 line_conf = result.verified_confidence
                 vision_text = result.vision_text
+
+            # Strikethrough filtering: remove crossed-out text
+            had_strikethrough = False
+            if self.strikethrough_detector and self.filter_strikethrough:
+                filtered_text, had_strikethrough, strike_ratio = self.filter_strikethrough(
+                    line_crop, line_text, self.strikethrough_detector
+                )
+                if had_strikethrough:
+                    print(f"[Strikethrough] '{line_text}' -> '{filtered_text}' (ratio: {strike_ratio:.1%})")
+                    line_text = filtered_text
 
             line_results.append({
                 "index": line_idx,
