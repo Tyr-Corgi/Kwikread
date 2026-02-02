@@ -563,7 +563,9 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "gound": "ground",
     "grind": "ground",
     "grund": "ground",
+    "grcunnd": "ground",  # TrOCR misread
     "deep": "beef",  # "around Deep" -> "ground beef"
+    "beep": "beef",  # TrOCR misread
 
     # ==========================================================================
     # BLACK/BLADE CONFUSION
