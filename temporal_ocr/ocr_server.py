@@ -286,10 +286,10 @@ class OCRServer:
         import torch
 
         self.processor = TrOCRProcessor.from_pretrained(
-            'microsoft/trocr-large-handwritten'
+            'microsoft/trocr-base-handwritten'
         )
         self.model = VisionEncoderDecoderModel.from_pretrained(
-            'microsoft/trocr-large-handwritten'
+            'microsoft/trocr-base-handwritten'
         )
 
         # Use MPS (Metal) on Mac, CUDA on Linux/Windows, CPU fallback
