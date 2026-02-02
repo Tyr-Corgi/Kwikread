@@ -25,9 +25,14 @@ import threading
 import requests
 from pathlib import Path
 from typing import List, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import cv2
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
+
+# CPU optimization constants
+NUM_WORKERS = 4   # Parallel workers for preprocessing
+BATCH_SIZE = 32   # Larger batches are faster on CPU
 
 # Server config
 HOST = 'localhost'
@@ -285,6 +290,10 @@ class OCRServer:
         from transformers import TrOCRProcessor, VisionEncoderDecoderModel
         import torch
 
+        # Optimize torch for CPU inference
+        torch.set_num_threads(NUM_WORKERS)
+        torch.set_num_interop_threads(2)
+
         self.processor = TrOCRProcessor.from_pretrained(
             'microsoft/trocr-base-handwritten'
         )
@@ -302,6 +311,9 @@ class OCRServer:
 
         self.model.to(self.device)
         self.model.eval()
+
+        # Initialize thread pool for parallel preprocessing
+        self.executor = ThreadPoolExecutor(max_workers=NUM_WORKERS)
 
         # EasyOCR for detection (text boxes only)
         import easyocr
@@ -355,30 +367,43 @@ class OCRServer:
         return results
 
     def recognize_batch(self, images: List[Image.Image]) -> List[str]:
-        """Batch recognize text from PIL images."""
+        """Batch recognize text from PIL images with optimized chunked processing."""
         import torch
 
         if not images:
             return []
 
-        with torch.no_grad():
-            pixel_values = self.processor(
-                images=images,
-                return_tensors='pt',
-                padding=True
-            ).pixel_values.to(self.device)
+        all_texts = []
 
-            generated_ids = self.model.generate(
-                pixel_values,
-                max_new_tokens=50
-            )
+        # Process in optimal batch sizes - inference_mode is faster than no_grad
+        with torch.inference_mode():
+            for i in range(0, len(images), BATCH_SIZE):
+                batch = images[i:i + BATCH_SIZE]
 
-            texts = self.processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=True
-            )
+                pixel_values = self.processor(
+                    images=batch,
+                    return_tensors='pt',
+                    padding=True
+                ).pixel_values.to(self.device)
 
-        return texts
+                generated_ids = self.model.generate(
+                    pixel_values,
+                    max_new_tokens=50
+                )
+
+                texts = self.processor.batch_decode(
+                    generated_ids,
+                    skip_special_tokens=True
+                )
+                all_texts.extend(texts)
+
+        return all_texts
+
+    def preprocess_crop_parallel(self, crop_data: Tuple) -> Tuple[int, Image.Image]:
+        """Preprocess a single crop - used for parallel processing."""
+        idx, crop, style = crop_data
+        pil_crop = preprocess_crop(crop, style=style)
+        return (idx, pil_crop)
 
     def verify_with_vision(self, crop_img: np.ndarray, trocr_text: str) -> str:
         """Verify/correct text using LLaVA vision model."""
@@ -521,7 +546,7 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 line_confidences.append(avg_conf)
 
         # Crop lines with adaptive padding based on text size
-        crops = []
+        raw_crops = []
         crop_bboxes = []
 
         for line_bbox, _ in sorted_lines:
@@ -536,12 +561,18 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             y2 = min(h_img, y + h + padding_y)
 
             crop = image[y1:y2, x1:x2]
-
-            # Apply adaptive preprocessing for handwriting
-            pil_crop = preprocess_crop(crop, style='auto')
-
-            crops.append(pil_crop)
+            raw_crops.append(crop)
             crop_bboxes.append((x1, y1, x2-x1, y2-y1, crop))
+
+        # Parallel preprocessing of all crops
+        crops = [None] * len(raw_crops)
+        crop_tasks = [(i, raw_crops[i], 'auto') for i in range(len(raw_crops))]
+
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = {executor.submit(self.preprocess_crop_parallel, task): task[0] for task in crop_tasks}
+            for future in as_completed(futures):
+                idx, pil_crop = future.result()
+                crops[idx] = pil_crop
 
         t3 = time.time()
 
