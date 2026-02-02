@@ -23,3 +23,6 @@ scipy>=1.7.0
 
 # CLI and utilities
 tqdm>=4.60.0
+
+# Async HTTP for parallel vision verification
+aiohttp>=3.8.0

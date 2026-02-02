@@ -27,13 +27,240 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 
 # Server config
 HOST = 'localhost'
 PORT = 8765
 SOCKET_PATH = '/tmp/ocr_server.sock'
 OLLAMA_URL = 'http://localhost:11434/api/generate'
+
+
+def preprocess_crop(crop_img: np.ndarray, style: str = 'auto') -> Image.Image:
+    """
+    Preprocess a line crop for better TrOCR recognition.
+
+    Args:
+        crop_img: BGR numpy array of the cropped line
+        style: Preprocessing style - 'auto', 'light', 'heavy', or 'cursive'
+
+    Returns:
+        Preprocessed PIL Image ready for TrOCR
+    """
+    # Convert to grayscale for analysis
+    if len(crop_img.shape) == 3:
+        gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = crop_img.copy()
+
+    h, w = gray.shape
+
+    # Auto-detect preprocessing needs based on image characteristics
+    if style == 'auto':
+        # Calculate contrast and brightness metrics
+        mean_val = np.mean(gray)
+        std_val = np.std(gray)
+
+        # Detect if image has low contrast (light handwriting)
+        low_contrast = std_val < 40
+
+        # Detect if text is very light (high mean = mostly white)
+        light_text = mean_val > 200
+
+        # Detect connected/cursive text by checking horizontal continuity
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (w // 4, 1))
+        horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel)
+        cursive_ratio = np.sum(horizontal_lines > 0) / max(1, np.sum(binary > 0))
+        is_cursive = cursive_ratio > 0.15
+
+        # Choose style based on detection
+        if low_contrast or light_text:
+            style = 'heavy'
+        elif is_cursive:
+            style = 'cursive'
+        else:
+            style = 'light'
+
+    # Apply preprocessing based on style
+    processed = crop_img.copy()
+
+    if style in ('heavy', 'cursive'):
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # This enhances local contrast without over-amplifying noise
+        if len(processed.shape) == 3:
+            lab = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB)
+            l_channel = lab[:, :, 0]
+        else:
+            l_channel = processed
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced_l = clahe.apply(l_channel)
+
+        if len(processed.shape) == 3:
+            lab[:, :, 0] = enhanced_l
+            processed = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        else:
+            processed = enhanced_l
+
+    # Deskew if needed (for tilted handwriting)
+    processed = deskew_crop(processed)
+
+    if style == 'cursive':
+        # For cursive text, apply mild denoising that preserves stroke details
+        if len(processed.shape) == 3:
+            gray_proc = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_proc = processed
+
+        # Gentle denoising that preserves edges
+        denoised = cv2.fastNlMeansDenoising(gray_proc, None, h=5, templateWindowSize=7, searchWindowSize=21)
+
+        # Convert back to 3-channel for consistency
+        processed = cv2.cvtColor(denoised, cv2.COLOR_GRAY2BGR)
+
+    elif style == 'heavy':
+        # For low contrast, apply stronger enhancement
+        if len(processed.shape) == 3:
+            gray_proc = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+        else:
+            gray_proc = processed
+
+        # Bilateral filter preserves edges while smoothing
+        filtered = cv2.bilateralFilter(gray_proc, 9, 75, 75)
+
+        # Adaptive thresholding for very light text
+        mean_val = np.mean(filtered)
+        if mean_val > 210:  # Very light text
+            # Use adaptive threshold to enhance faint strokes
+            adaptive = cv2.adaptiveThreshold(
+                filtered, 255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                blockSize=15,
+                C=8
+            )
+            # Blend with original to preserve some grayscale info
+            blended = cv2.addWeighted(filtered, 0.3, adaptive, 0.7, 0)
+            processed = cv2.cvtColor(blended, cv2.COLOR_GRAY2BGR)
+        else:
+            processed = cv2.cvtColor(filtered, cv2.COLOR_GRAY2BGR)
+
+    # Convert to PIL Image
+    pil_img = Image.fromarray(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
+
+    # Final PIL-based enhancements
+    if style in ('heavy', 'cursive'):
+        # Slight sharpening to make strokes clearer
+        enhancer = ImageEnhance.Sharpness(pil_img)
+        pil_img = enhancer.enhance(1.2)
+
+    return pil_img
+
+
+def deskew_crop(image: np.ndarray, max_angle: float = 10.0) -> np.ndarray:
+    """
+    Deskew a line crop if it's tilted.
+
+    Args:
+        image: BGR or grayscale numpy array
+        max_angle: Maximum angle to correct (degrees)
+
+    Returns:
+        Deskewed image
+    """
+    # Convert to grayscale
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    h, w = gray.shape
+
+    # Skip small images
+    if w < 50 or h < 15:
+        return image
+
+    # Threshold to binary
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Find coordinates of text pixels
+    coords = np.column_stack(np.where(binary > 0))
+
+    if len(coords) < 10:
+        return image
+
+    # Fit a minimum area rectangle
+    try:
+        rect = cv2.minAreaRect(coords)
+        angle = rect[-1]
+
+        # Adjust angle interpretation
+        if angle < -45:
+            angle = 90 + angle
+        elif angle > 45:
+            angle = angle - 90
+
+        # Only correct if angle is significant but not too extreme
+        if abs(angle) < 0.5 or abs(angle) > max_angle:
+            return image
+
+        # Rotate image to correct skew
+        center = (w // 2, h // 2)
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+
+        # Calculate new bounding box size
+        cos = abs(rotation_matrix[0, 0])
+        sin = abs(rotation_matrix[0, 1])
+        new_w = int(h * sin + w * cos)
+        new_h = int(h * cos + w * sin)
+
+        # Adjust rotation matrix for new size
+        rotation_matrix[0, 2] += (new_w - w) / 2
+        rotation_matrix[1, 2] += (new_h - h) / 2
+
+        # Apply rotation with white background
+        rotated = cv2.warpAffine(
+            image, rotation_matrix, (new_w, new_h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(255, 255, 255) if len(image.shape) == 3 else 255
+        )
+
+        return rotated
+
+    except Exception:
+        return image
+
+
+def calculate_adaptive_padding(line_height: int, image_width: int) -> Tuple[int, int]:
+    """
+    Calculate adaptive padding based on text characteristics.
+
+    Args:
+        line_height: Height of the detected line in pixels
+        image_width: Width of the full image
+
+    Returns:
+        Tuple of (horizontal_padding, vertical_padding) in pixels
+    """
+    # Base vertical padding scales with text size
+    base_padding_y = max(8, int(line_height * 0.25))
+
+    # Horizontal padding should be more generous to capture word edges
+    base_padding_x = max(15, int(line_height * 0.5))
+
+    # Additional padding for potentially connected text
+    # Larger text often has more spacing needs
+    if line_height > 40:
+        base_padding_x = int(base_padding_x * 1.2)
+        base_padding_y = int(base_padding_y * 1.1)
+
+    # Cap padding at reasonable maximum
+    max_padding_x = min(40, image_width // 15)
+    max_padding_y = min(25, image_width // 30)
+
+    return (min(base_padding_x, max_padding_x), min(base_padding_y, max_padding_y))
 
 
 class OCRServer:
@@ -89,11 +316,21 @@ class OCRServer:
             self.strike_detector = None
             self.filter_strike = None
 
-        # Grocery corrector
+        # Grocery corrector - force reload to get latest changes
         try:
-            from grocery_corrector import correct_grocery_text
+            import importlib
+            import grocery_corrector
+            importlib.reload(grocery_corrector)
+            from grocery_corrector import correct_grocery_text, PHRASE_COMPLETIONS
             self.correct_grocery = correct_grocery_text
-        except:
+            print(f"[Server] Grocery corrector loaded with {len(PHRASE_COMPLETIONS)} phrase completions")
+            # Verify it works
+            test_result = correct_grocery_text("chai", threshold=0.88)
+            print(f"[Server] Verification: 'chai' -> {test_result}")
+        except Exception as e:
+            print(f"[Server] Warning: Could not load grocery_corrector: {e}")
+            import traceback
+            traceback.print_exc()
             self.correct_grocery = None
 
         t1 = time.time()
@@ -101,8 +338,20 @@ class OCRServer:
         self._loaded = True
 
     def detect_lines(self, image: np.ndarray) -> List[Tuple[list, str, float]]:
-        """Detect text lines using EasyOCR."""
-        results = self.detector.readtext(image)
+        """Detect text lines using EasyOCR with optimized settings."""
+        # Use paragraph=False to get individual word boxes for better grouping control
+        # Use width_ths=0.7 to be more aggressive about merging horizontal boxes
+        # Use height_ths=0.5 to group boxes with similar heights
+        results = self.detector.readtext(
+            image,
+            paragraph=False,      # Get word-level boxes for precise grouping
+            width_ths=0.7,        # Higher threshold = more aggressive horizontal merging
+            height_ths=0.5,       # Merge boxes of similar height
+            ycenter_ths=0.5,      # Y-center threshold for same-line detection
+            x_ths=1.0,            # Allow larger horizontal gaps before splitting
+            text_threshold=0.5,   # Lower threshold to catch faint text (like "Candles")
+            low_text=0.3,         # Lower bound for text region detection
+        )
         return results
 
     def recognize_batch(self, images: List[Image.Image]) -> List[str]:
@@ -203,10 +452,14 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             cy = y + h // 2
             boxes.append((x, y, w, h, cy, det[1], det[2]))  # det[2] is confidence
 
-        # Cluster by y-center
+        # Cluster by y-center with conservative eps to avoid merging rows
         if len(boxes) > 1:
+            # Use conservative eps: 30% of average text height, capped at 35px
+            avg_height = np.mean([b[3] for b in boxes])  # b[3] is height
+            dynamic_eps = min(35, max(20, avg_height * 0.3))  # Between 20-35px
+
             y_centers = np.array([[b[4]] for b in boxes])
-            clustering = DBSCAN(eps=30, min_samples=1).fit(y_centers)
+            clustering = DBSCAN(eps=dynamic_eps, min_samples=1).fit(y_centers)
             labels = clustering.labels_
         else:
             labels = [0]
@@ -222,13 +475,14 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
         # Sort lines top to bottom, split by large x-gaps (columns)
         sorted_lines = []
         line_confidences = []
+        easyocr_line_texts = []  # Store concatenated EasyOCR text as fallback
         h_img, w_img = image.shape[:2]
         column_gap_threshold = w_img * 0.15  # 15% of image width = column gap (~160px for 1080w)
 
         for label in sorted(lines.keys(), key=lambda l: np.mean([b[1] for b in lines[l]])):
             line_boxes = sorted(lines[label], key=lambda b: b[0])
 
-            # Split line by large x-gaps (detect columns)
+            # Split line by large x-gaps (detect columns only)
             split_lines = []
             current_group = [line_boxes[0]]
 
@@ -242,6 +496,7 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                     split_lines.append(current_group)
                     current_group = [curr_box]
                 else:
+                    # Keep words together even with moderate gaps
                     current_group.append(curr_box)
 
             split_lines.append(current_group)
@@ -257,24 +512,34 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 line_bbox = (min(xs), min(ys), max(x2s) - min(xs), max(y2s) - min(ys))
                 sorted_lines.append((line_bbox, group_boxes))
 
+                # Concatenate EasyOCR text from all boxes in this line (as fallback)
+                easyocr_text = " ".join([b[4] for b in group_boxes])  # b[4] is the EasyOCR text
+                easyocr_line_texts.append(easyocr_text)
+
                 # Average confidence for the line
                 avg_conf = np.mean([b[5] for b in group_boxes])
                 line_confidences.append(avg_conf)
 
-        # Crop lines with padding
-        padding = 12
+        # Crop lines with adaptive padding based on text size
         crops = []
         crop_bboxes = []
 
         for line_bbox, _ in sorted_lines:
             x, y, w, h = line_bbox
-            x1 = max(0, x - padding)
-            y1 = max(0, y - padding)
-            x2 = min(w_img, x + w + padding)
-            y2 = min(h_img, y + h + padding)
+
+            # Calculate adaptive padding based on line height
+            padding_x, padding_y = calculate_adaptive_padding(h, w_img)
+
+            x1 = max(0, x - padding_x)
+            y1 = max(0, y - padding_y)
+            x2 = min(w_img, x + w + padding_x)
+            y2 = min(h_img, y + h + padding_y)
 
             crop = image[y1:y2, x1:x2]
-            pil_crop = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+
+            # Apply adaptive preprocessing for handwriting
+            pil_crop = preprocess_crop(crop, style='auto')
+
             crops.append(pil_crop)
             crop_bboxes.append((x1, y1, x2-x1, y2-y1, crop))
 
@@ -282,6 +547,29 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
 
         # Batch recognize
         texts = self.recognize_batch(crops)
+
+        # Multi-pass retry for empty results
+        # If TrOCR returns empty, try with different preprocessing styles
+        retry_styles = ['light', 'heavy', 'none']  # 'auto' was already tried
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                # Get the raw crop for this line
+                x1, y1, w, h, raw_crop = crop_bboxes[i]
+
+                # Try different preprocessing styles
+                for style in retry_styles:
+                    if style == 'none':
+                        # No preprocessing - use raw image converted to PIL
+                        retry_crop = Image.fromarray(cv2.cvtColor(raw_crop, cv2.COLOR_BGR2RGB))
+                    else:
+                        retry_crop = preprocess_crop(raw_crop, style=style)
+
+                    retry_texts = self.recognize_batch([retry_crop])
+                    if retry_texts and retry_texts[0] and retry_texts[0].strip():
+                        texts[i] = retry_texts[0]
+                        print(f"[Retry] Line {i}: Empty result recovered with style='{style}' -> '{retry_texts[0]}'")
+                        break
+
         t4 = time.time()
 
         # Determine which lines to verify (lowest confidence)
@@ -300,6 +588,40 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
         for i, (bbox_info, text) in enumerate(zip(crop_bboxes, texts)):
             x, y, w, h, crop_img = bbox_info
             confidence = line_confidences[i]
+            easyocr_text = easyocr_line_texts[i] if i < len(easyocr_line_texts) else ""
+
+            # Compare TrOCR vs EasyOCR - only use EasyOCR when it's clearly better
+            # Be conservative: EasyOCR can have garbage too
+            trocr_words = len(text.split()) if text else 0
+            easyocr_words = len(easyocr_text.split()) if easyocr_text else 0
+
+            # Heuristic: check if text looks like garbage (many special chars)
+            def looks_like_garbage(txt):
+                if not txt or len(txt) < 2:
+                    return True
+                special_chars = sum(1 for c in txt if c in '|;{}[]<>$+@#%^&*()')
+                alpha_chars = sum(1 for c in txt if c.isalpha())
+                # More than 20% special chars = garbage
+                return alpha_chars == 0 or (special_chars / max(1, len(txt)) > 0.2)
+
+            trocr_is_garbage = looks_like_garbage(text)
+            easyocr_is_garbage = looks_like_garbage(easyocr_text)
+
+            # Only use EasyOCR if TrOCR is garbage AND EasyOCR is not garbage
+            use_easyocr = False
+            if not text and easyocr_text and not easyocr_is_garbage:
+                use_easyocr = True
+                print(f"[Fallback] Line {i}: TrOCR empty, using EasyOCR '{easyocr_text}'")
+            elif trocr_is_garbage and not easyocr_is_garbage:
+                use_easyocr = True
+                print(f"[Fallback] Line {i}: TrOCR garbage '{text}', using EasyOCR '{easyocr_text}'")
+            elif easyocr_words > trocr_words and easyocr_words <= trocr_words + 3 and not easyocr_is_garbage:
+                # EasyOCR has more words - likely a multi-word item that TrOCR truncated
+                use_easyocr = True
+                print(f"[Merge] Line {i}: Using EasyOCR '{easyocr_text}' over TrOCR '{text}' ({easyocr_words} vs {trocr_words} words)")
+
+            if use_easyocr:
+                text = easyocr_text
 
             # Filter strikethrough
             if self.strike_detector and self.filter_strike:
@@ -322,13 +644,14 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                     print(f"[Verify] Line {i}: '{original}' -> '{text}'")
                 verified = True
 
-            # Apply grocery item correction
+            # Apply grocery item correction (conservative high-threshold matching)
             corrected = False
             if self.correct_grocery:
                 original = text
-                text, corrected, score = self.correct_grocery(text)
+                # Use conservative threshold of 0.88 - only correct high-confidence matches
+                text, corrected, score = self.correct_grocery(text, threshold=0.88)
                 if corrected:
-                    print(f"[Correct] Line {i}: '{original}' -> '{text}' ({score:.2f})")
+                    print(f"[Correct] Line {i}: '{original}' -> '{text}' (match={score:.2f})")
 
             results.append({
                 "index": i,
