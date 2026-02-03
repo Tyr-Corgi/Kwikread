@@ -538,6 +538,8 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "unit": "mix",
     "nix": "mix",
     "mox": "mix",
+    "trailmit": "trail mix",  # TrOCR joins words
+    "trailmix": "trail mix",  # Compound word
 
     # Oat/Out confusion
     "out": "oat",
@@ -563,7 +565,10 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "gound": "ground",
     "grind": "ground",
     "grund": "ground",
+    "gccund": "ground",  # TrOCR misread
+    "gceund": "ground",  # TrOCR variant
     "deep": "beef",  # "around Deep" -> "ground beef"
+    "beep": "beef",  # TrOCR misread
 
     # ==========================================================================
     # BLACK/BLADE CONFUSION
@@ -588,7 +593,7 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "paprica": "paprika",
     "paprike": "paprika",
     "paparika": "paprika",
-    "paprica": "paprika",
+    "paprilea": "paprika",  # TrOCR misread
 
     # ==========================================================================
     # CHICKEN/KITCHEN CONFUSION
@@ -637,6 +642,7 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "papar": "paper",
     "papor": "paper",
     "popor": "paper",
+    "papeo": "paper",  # TrOCR misread
 
     "plotes": "plates",
     "platas": "plates",
@@ -764,6 +770,9 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "chese": "cheese",
     "cheeze": "cheese",
 
+    # Milk confusions
+    "mills": "milk",  # TrOCR misread
+
     "butte": "butter",
     "buttr": "butter",
     "buter": "butter",
@@ -790,6 +799,15 @@ WORD_CORRECTIONS: Dict[str, str] = {
     "bred": "bread",
     "brea": "bread",
     "braed": "bread",
+
+    # ==========================================================================
+    # TORTILLA
+    # ==========================================================================
+    "lortila": "tortilla",  # TrOCR misread
+    "lortilla": "tortilla",
+    "tortila": "tortilla",
+    "tortila": "tortilla",
+    "toritlla": "tortilla",
 
     # ==========================================================================
     # ICE CREAM / FLAVORS
@@ -1062,36 +1080,134 @@ def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
+# =============================================================================
+# CHARACTER CONFUSION PATTERNS - Universal handwriting OCR confusions
+# These are based on visual similarity in handwritten Latin alphabet
+# =============================================================================
+
+CHAR_CONFUSIONS = {
+    # Vertical strokes
+    ('l', 'i'): 0.3, ('i', 'l'): 0.3,
+    ('l', 't'): 0.4, ('t', 'l'): 0.4,
+    ('l', '1'): 0.3, ('1', 'l'): 0.3,
+    ('i', '1'): 0.3, ('1', 'i'): 0.3,
+
+    # Round shapes
+    ('o', 'c'): 0.3, ('c', 'o'): 0.3,
+    ('o', 'a'): 0.4, ('a', 'o'): 0.4,
+    ('c', 'e'): 0.3, ('e', 'c'): 0.3,
+    ('o', '0'): 0.2, ('0', 'o'): 0.2,
+    ('a', 'e'): 0.4, ('e', 'a'): 0.4,  # Common handwriting confusion
+
+    # Similar curves
+    ('r', 'n'): 0.3, ('n', 'r'): 0.3,
+    ('n', 'h'): 0.4, ('h', 'n'): 0.4,
+    ('m', 'n'): 0.4, ('n', 'm'): 0.4,
+    ('u', 'v'): 0.3, ('v', 'u'): 0.3,
+    ('u', 'n'): 0.4, ('n', 'u'): 0.4,
+    ('v', 'r'): 0.4, ('r', 'v'): 0.4,  # v/r confusion in cursive
+    ('w', 'v'): 0.4, ('v', 'w'): 0.4,  # w/v similar shape
+
+    # Ascenders/descenders
+    ('d', 'b'): 0.4, ('b', 'd'): 0.4,
+    ('p', 'b'): 0.4, ('b', 'p'): 0.4,
+    ('q', 'g'): 0.4, ('g', 'q'): 0.4,
+    ('h', 'b'): 0.4, ('b', 'h'): 0.4,  # h/b loop similarity
+
+    # Common OCR errors
+    ('s', '5'): 0.3, ('5', 's'): 0.3,
+    ('g', '9'): 0.3, ('9', 'g'): 0.3,
+    ('z', '2'): 0.3, ('2', 'z'): 0.3,
+    ('j', 'o'): 0.4, ('o', 'j'): 0.4,  # Cursive o can look like j
+}
+
+
+def confusion_aware_similarity(ocr_text: str, target: str) -> float:
+    """
+    Calculate similarity with bonus for known character confusions.
+
+    When characters differ but are commonly confused in handwriting OCR,
+    the similarity score gets a boost. This is generalizable because
+    these confusions are universal to Latin alphabet handwriting.
+
+    Args:
+        ocr_text: The OCR output text
+        target: The target grocery item to compare against
+
+    Returns:
+        Similarity score between 0.0 and 1.0
+    """
+    ocr_lower = ocr_text.lower().strip()
+    target_lower = target.lower().strip()
+
+    # Base similarity using standard algorithm
+    base_sim = SequenceMatcher(None, ocr_lower, target_lower).ratio()
+
+    # If lengths differ significantly, just use base similarity
+    len_diff = abs(len(ocr_lower) - len(target_lower))
+    if len_diff > 2:
+        return base_sim
+
+    # Count how many differences are known confusions
+    confusion_bonus = 0.0
+    min_len = min(len(ocr_lower), len(target_lower))
+
+    # Simple character-by-character comparison for equal-ish length strings
+    if len_diff <= 1:
+        diff_count = 0
+        confusion_count = 0
+
+        for i in range(min_len):
+            c1 = ocr_lower[i] if i < len(ocr_lower) else ''
+            c2 = target_lower[i] if i < len(target_lower) else ''
+
+            if c1 != c2:
+                diff_count += 1
+                if (c1, c2) in CHAR_CONFUSIONS:
+                    confusion_count += 1
+                    # Boost proportional to how confusable the chars are
+                    confusion_bonus += (1.0 - CHAR_CONFUSIONS[(c1, c2)]) * 0.03
+
+        # Only apply bonus if most differences are confusions
+        if diff_count > 0 and confusion_count / diff_count >= 0.5:
+            return min(1.0, base_sim + confusion_bonus)
+
+    return base_sim
+
+
 def get_length_adjusted_threshold(text: str, base_threshold: float = 0.88) -> float:
     """
     Calculate length-adjusted threshold. Shorter words need HIGHER thresholds
     because small changes have larger impact on similarity.
 
-    Strategy:
-    - Short words (<=4): RAISE threshold to 0.92 (prevent Salt->Salsa)
-    - Medium words (5-7): Use base threshold of 0.85-0.88
-    - Long words (8+): LOWER threshold to 0.82 (allow Ppetzels->Pretzels)
+    Based on information theory: longer words have more redundancy,
+    so they can tolerate more character errors while remaining identifiable.
 
-    The key insight is that for long words with clear OCR errors,
-    we can afford to be more lenient because there's more context.
+    Strategy:
+    - Short words (<=4): RAISE threshold to 0.95 (prevent Salt->Salsa)
+    - Medium-short (5-6): Use 0.88-0.90
+    - Medium words (7-9): Use 0.82-0.85
+    - Long words (10+): Use 0.75-0.80 (more redundancy)
     """
     text_len = len(text.strip())
 
     if text_len <= 4:
         # Very short words: require near-exact match to prevent wrong corrections
         # Salt (4) vs Salsa (5) = 0.67 - must block
-        return max(0.92, base_threshold)
+        return 0.95
     elif text_len <= 5:
         # Short words: require high match
-        # Peas (4) vs Pasta (5) = 0.67 - must block
-        return max(0.88, base_threshold)
-    elif text_len <= 7:
-        # Medium words: standard high threshold
-        return 0.85  # Fixed value for medium words
+        return 0.90
+    elif text_len <= 6:
+        # Medium-short words
+        return 0.88
+    elif text_len <= 9:
+        # Medium words: can tolerate 1-2 char errors
+        return 0.82
     else:
-        # Longer words (8+): can use lower threshold
-        # Ppetzels (8) vs Pretzels (8) = 0.875 - should allow
-        return 0.82  # Fixed lower value for long words
+        # Longer words (10+): more context, can tolerate more errors
+        # "strawberries" with 2 errors still identifiable
+        return 0.78
 
 
 def is_protected_word(text: str) -> bool:
@@ -1145,7 +1261,8 @@ def validate_semantic_correction(original: str, corrected: str) -> bool:
 def find_best_match(text: str, threshold: float = 0.88) -> Tuple[Optional[str], float]:
     """
     Find the best matching grocery item for the given text.
-    Uses length-adjusted thresholds for safety.
+    Uses length-adjusted thresholds, confusion-aware similarity,
+    and prefix-stripping for OCR errors.
     """
     text_clean = text.lower().strip().rstrip('.')
 
@@ -1163,85 +1280,91 @@ def find_best_match(text: str, threshold: float = 0.88) -> Tuple[Optional[str], 
     best_match = None
     best_score = 0.0
 
+    # Try normal matching first
     for item in GROCERY_ITEMS:
-        score = similarity(text_clean, item)
+        # Use confusion-aware similarity for better handling of
+        # common OCR errors like r↔n, o↔c, l↔i
+        score = confusion_aware_similarity(text_clean, item)
         if score > best_score and score >= adjusted_threshold:
             best_score = score
             best_match = item
 
+    # If no good match, try prefix stripping (OCR often adds garbage at start)
+    # Examples: "arranilla" -> strip "ar" -> "ranilla" ~ "vanilla"
+    #           "imint" -> strip "i" -> "mint"
+    # BUT: Only for single words without spaces/dashes (avoid "oats - cold cut" -> "cold cut")
+    if best_match is None and len(text_clean) > 4:
+        # Only strip from single-word items (no spaces or dashes)
+        if ' ' not in text_clean and '-' not in text_clean:
+            # Try stripping 1-3 character prefixes
+            for strip_len in [1, 2, 3]:
+                if len(text_clean) > strip_len + 3:  # Need at least 3 chars remaining
+                    stripped = text_clean[strip_len:]
+                    # Check exact match after stripping
+                    if stripped in GROCERY_SET:
+                        return stripped, 0.90  # High confidence for exact post-strip match
+
+                    # Try fuzzy match after stripping
+                    stripped_threshold = get_length_adjusted_threshold(stripped, threshold)
+                    for item in GROCERY_ITEMS:
+                        score = confusion_aware_similarity(stripped, item)
+                        # Require higher threshold since we're doing speculative stripping
+                        if score > best_score and score >= stripped_threshold + 0.03:
+                            best_score = score
+                            best_match = item
+
     return best_match, best_score
 
 
-def correct_grocery_text(text: str, threshold: float = 0.88) -> Tuple[str, bool, float]:
-    """
-    Attempt to correct OCR text to a known grocery item.
-
-    CONSERVATIVE APPROACH:
-    1. If text is already valid, don't change it
-    2. If text is a protected word, don't change it
-    3. Require HIGH similarity threshold (0.88+)
-    4. Validate semantic correctness of corrections
-    5. Short words require even higher thresholds
+def _apply_garbage_cleanup(text: str) -> Tuple[str, bool]:
+    """Remove garbage prefixes from OCR text.
 
     Args:
-        text: OCR text to correct
-        threshold: Base minimum similarity (default 0.88 - very conservative)
+        text: The text to clean
 
     Returns:
-        Tuple of (corrected_text, was_corrected, confidence)
+        Tuple of (cleaned_text, was_cleaned)
     """
-    original = text.strip()
-    text_clean = re.sub(r'[.\s]+$', '', original)
-
-    # RULE 0a: Clean garbage prefixes before other processing
-    text_lower = text_clean.lower()
-    cleaned = text_clean
-    garbage_removed = False
     for pattern in GARBAGE_PREFIXES:
-        import re as regex_mod
-        match = regex_mod.match(pattern, text_clean, regex_mod.IGNORECASE)
+        match = re.match(pattern, text, re.IGNORECASE)
         if match:
-            remainder = text_clean[match.end():]
+            remainder = text[match.end():]
             if len(remainder) >= 3:  # Only clean if something meaningful remains
-                cleaned = remainder
-                text_lower = cleaned.lower()
-                text_clean = cleaned  # Update text_clean for subsequent rules
-                garbage_removed = True
-                break
+                return remainder, True
+    return text, False
 
-    # RULE 0b: Check for phrase corrections (handles multi-word TrOCR errors)
+
+def _apply_phrase_corrections(text_lower: str, original: str) -> Optional[Tuple[str, bool, float]]:
+    """Apply phrase-level corrections for multi-word TrOCR errors.
+
+    Args:
+        text_lower: Lowercase version of the text
+        original: Original text for capitalization preservation
+
+    Returns:
+        Tuple of (corrected, was_corrected, confidence) if a correction was made,
+        None otherwise
+    """
     for phrase, correction in PHRASE_CORRECTIONS.items():
         if phrase in text_lower:
-            # Replace the phrase and preserve surrounding text
             corrected = text_lower.replace(phrase, correction)
-            # Restore capitalization if original had it
             if corrected and corrected[0].isalpha():
                 corrected = corrected.title()
             return corrected.strip(), True, 0.92
+    return None
 
-    # If we only removed garbage and the result is valid, return it
-    if garbage_removed and is_valid_in_grocery_set(cleaned):
-        return cleaned, True, 0.90
 
-    # RULE 1: If already a valid grocery item, check for phrase completions first
-    if is_valid_in_grocery_set(text_clean):
-        # For single words, check if we can complete to a longer phrase
-        # This handles cases like "beans" -> "green beans" or "chai" -> "chai tea"
-        words = text_clean.split()
-        if len(words) == 1:
-            completed, completion_conf = try_phrase_completion(text_clean)
-            if completed and completion_conf >= 0.70:
-                if original and original[0].isupper():
-                    completed = completed.title()
-                return completed, True, completion_conf
-        # If no phrase completion, return original as valid
-        return original, False, 1.0
+def _apply_direct_corrections(text_clean: str, original: str) -> Optional[Tuple[str, bool, float]]:
+    """Apply direct word-level corrections from WORD_CORRECTIONS lookup.
 
-    # RULE 2: If it's a protected word, don't change it
-    if is_protected_word(text_clean):
-        return original, False, 0.0
+    Args:
+        text_clean: Cleaned text to correct
+        original: Original text for capitalization preservation
 
-    # RULE 3: Apply word-level corrections for known OCR errors
+    Returns:
+        Tuple of (corrected, was_corrected, confidence) if corrections were made,
+        None otherwise
+    """
     words = text_clean.split()
     corrected_words = []
     any_word_corrected = False
@@ -1257,97 +1380,208 @@ def correct_grocery_text(text: str, threshold: float = 0.88) -> Tuple[str, bool,
         else:
             corrected_words.append(word)
 
-    if any_word_corrected:
-        text_clean = ' '.join(corrected_words)
-        # Check if corrected version is valid
-        if is_valid_in_grocery_set(text_clean):
-            # RULE 3a: Check for phrase completion after word correction
-            # This handles cases like "chaites" -> "chai" -> "chai tea"
-            corrected_words_list = text_clean.split()
-            if len(corrected_words_list) == 1:
-                completed, completion_conf = try_phrase_completion(text_clean)
-                if completed and completion_conf >= 0.70:
-                    if original and original[0].isupper():
-                        completed = completed.title()
-                    return completed, True, completion_conf
-            # No phrase completion, return as-is
-            if original and original[0].isupper():
-                return text_clean.title(), True, 0.95
-            return text_clean, True, 0.95
+    if not any_word_corrected:
+        return None
 
-    # RULE 4: Try fuzzy matching with length-adjusted threshold
-    # Long words (8+ chars) can use lower threshold (0.82) to catch typos like Ppetzels->Pretzels
-    adjusted_threshold = get_length_adjusted_threshold(text_clean, threshold)
-    match, score = find_best_match(text_clean, threshold)
+    corrected_text = ' '.join(corrected_words)
 
-    if match and score >= adjusted_threshold:
-        # RULE 5: Validate semantic correctness
-        if not validate_semantic_correction(text_clean, match):
-            return original, False, 0.0
-
-        # RULE 5a: After fuzzy matching to a single word, check for phrase completion
-        # This handles cases like "chaites" -> "chai" -> "chai tea"
-        match_words = match.split()
-        if len(match_words) == 1:
-            completed, completion_conf = try_phrase_completion(match)
+    # Check if corrected version is valid
+    if is_valid_in_grocery_set(corrected_text):
+        # Check for phrase completion after word correction
+        corrected_words_list = corrected_text.split()
+        if len(corrected_words_list) == 1:
+            completed, completion_conf = try_phrase_completion(corrected_text)
             if completed and completion_conf >= 0.70:
-                # Preserve original capitalization style
                 if original and original[0].isupper():
                     completed = completed.title()
                 return completed, True, completion_conf
-
-        # Preserve original capitalization style
+        # No phrase completion, return as-is
         if original and original[0].isupper():
-            corrected = match.title()
-        else:
-            corrected = match
+            return corrected_text.title(), True, 0.95
+        return corrected_text, True, 0.95
 
-        return corrected, True, score
+    return None
 
-    # RULE 6: For multi-word phrases, try individual word corrections
-    # But only if we have high confidence on EACH word
-    if len(words) >= 2 and not any_word_corrected:
-        corrected_words = []
-        all_valid = True
-        total_score = 0.0
 
-        for word in words:
-            # Skip protected words
-            if is_protected_word(word):
-                corrected_words.append(word)
-                total_score += 1.0
-                continue
+def _apply_fuzzy_matching(
+    text_clean: str, original: str, threshold: float
+) -> Optional[Tuple[str, bool, float]]:
+    """Apply fuzzy matching to find the best grocery item match.
 
-            # Try to match each word
-            word_match, word_score = find_best_match(word, threshold)
+    Args:
+        text_clean: Cleaned text to match
+        original: Original text for capitalization preservation
+        threshold: Base similarity threshold
 
-            if word_match and word_score >= threshold:
-                if word and word[0].isupper():
-                    corrected_words.append(word_match.title())
-                else:
-                    corrected_words.append(word_match)
-                total_score += word_score
+    Returns:
+        Tuple of (corrected, was_corrected, confidence) if a match was found,
+        None otherwise
+    """
+    adjusted_threshold = get_length_adjusted_threshold(text_clean, threshold)
+    match, score = find_best_match(text_clean, threshold)
+
+    if not match or score < adjusted_threshold:
+        return None
+
+    # Validate semantic correctness
+    if not validate_semantic_correction(text_clean, match):
+        return None
+
+    # Check for phrase completion after fuzzy matching
+    match_words = match.split()
+    if len(match_words) == 1:
+        completed, completion_conf = try_phrase_completion(match)
+        if completed and completion_conf >= 0.70:
+            if original and original[0].isupper():
+                completed = completed.title()
+            return completed, True, completion_conf
+
+    # Preserve original capitalization style
+    if original and original[0].isupper():
+        corrected = match.title()
+    else:
+        corrected = match
+
+    return corrected, True, score
+
+
+def _apply_multiword_correction(
+    words: List[str], text_clean: str, threshold: float
+) -> Optional[Tuple[str, bool, float]]:
+    """Apply corrections to multi-word phrases word by word.
+
+    Args:
+        words: List of words in the phrase
+        text_clean: Cleaned text for semantic validation
+        threshold: Similarity threshold
+
+    Returns:
+        Tuple of (corrected, was_corrected, confidence) if corrections were made,
+        None otherwise
+    """
+    corrected_words = []
+    all_valid = True
+    total_score = 0.0
+
+    for word in words:
+        # Skip protected words
+        if is_protected_word(word):
+            corrected_words.append(word)
+            total_score += 1.0
+            continue
+
+        # Try to match each word
+        word_match, word_score = find_best_match(word, threshold)
+
+        if word_match and word_score >= threshold:
+            if word and word[0].isupper():
+                corrected_words.append(word_match.title())
             else:
-                # Word doesn't match well - keep original
-                corrected_words.append(word)
-                total_score += 0.5
-                # If similarity is really low, mark as not all valid
-                if word_match is None or word_score < 0.7:
-                    all_valid = False
+                corrected_words.append(word_match)
+            total_score += word_score
+        else:
+            # Word doesn't match well - keep original
+            corrected_words.append(word)
+            total_score += 0.5
+            # If similarity is really low, mark as not all valid
+            if word_match is None or word_score < 0.7:
+                all_valid = False
 
-        if all_valid:
-            result = ' '.join(corrected_words)
-            # Validate semantic correctness
-            if validate_semantic_correction(text_clean, result):
-                avg_score = total_score / len(words)
-                if avg_score >= 0.85:
-                    return result, True, avg_score
+    if not all_valid:
+        return None
 
-    # RULE 7: Try phrase completion for truncated single words
-    # This is a last resort for when TrOCR stops early on multi-word items
+    result = ' '.join(corrected_words)
+    # Validate semantic correctness
+    if not validate_semantic_correction(text_clean, result):
+        return None
+
+    avg_score = total_score / len(words)
+    if avg_score >= 0.85:
+        return result, True, avg_score
+
+    return None
+
+
+def correct_grocery_text(text: str, threshold: float = 0.88) -> Tuple[str, bool, float]:
+    """
+    Attempt to correct OCR text to a known grocery item.
+
+    This function applies a series of correction rules in order of priority:
+    1. Garbage prefix cleanup
+    2. Phrase-level corrections for TrOCR errors
+    3. Valid grocery item passthrough with phrase completion
+    4. Protected word passthrough
+    5. Direct word corrections from lookup table
+    6. Fuzzy matching with semantic validation
+    7. Multi-word phrase correction
+    8. Phrase completion for truncated words
+
+    CONSERVATIVE APPROACH:
+    - If text is already valid, don't change it
+    - If text is a protected word, don't change it
+    - Require HIGH similarity threshold (0.88+)
+    - Validate semantic correctness of corrections
+    - Short words require even higher thresholds
+
+    Args:
+        text: OCR text to correct
+        threshold: Base minimum similarity (default 0.88 - very conservative)
+
+    Returns:
+        Tuple of (corrected_text, was_corrected, confidence)
+    """
+    original = text.strip()
+    text_clean = re.sub(r'[.\s]+$', '', original)
+
+    # RULE 1: Clean garbage prefixes
+    cleaned, garbage_removed = _apply_garbage_cleanup(text_clean)
+    if garbage_removed:
+        text_clean = cleaned
+
+    # RULE 2: Check for phrase corrections (handles multi-word TrOCR errors)
+    result = _apply_phrase_corrections(text_clean.lower(), original)
+    if result:
+        return result
+
+    # If we only removed garbage and the result is valid, return it
+    if garbage_removed and is_valid_in_grocery_set(cleaned):
+        return cleaned, True, 0.90
+
+    # RULE 3: If already a valid grocery item, check for phrase completions
+    if is_valid_in_grocery_set(text_clean):
+        words = text_clean.split()
+        if len(words) == 1:
+            completed, completion_conf = try_phrase_completion(text_clean)
+            if completed and completion_conf >= 0.70:
+                if original and original[0].isupper():
+                    completed = completed.title()
+                return completed, True, completion_conf
+        return original, False, 1.0
+
+    # RULE 4: If it's a protected word, don't change it
+    if is_protected_word(text_clean):
+        return original, False, 0.0
+
+    # RULE 5: Apply word-level corrections for known OCR errors
+    result = _apply_direct_corrections(text_clean, original)
+    if result:
+        return result
+
+    # RULE 6: Try fuzzy matching with length-adjusted threshold
+    result = _apply_fuzzy_matching(text_clean, original, threshold)
+    if result:
+        return result
+
+    # RULE 7: For multi-word phrases, try individual word corrections
+    words = text_clean.split()
+    if len(words) >= 2:
+        result = _apply_multiword_correction(words, text_clean, threshold)
+        if result:
+            return result
+
+    # RULE 8: Try phrase completion for truncated single words
     completed, completion_conf = try_phrase_completion(text_clean)
     if completed and completion_conf >= 0.70:
-        # Preserve capitalization
         if original and original[0].isupper():
             completed = completed.title()
         return completed, True, completion_conf

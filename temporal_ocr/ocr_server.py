@@ -21,6 +21,8 @@ import time
 import socket
 import struct
 import base64
+import os
+import traceback
 import threading
 import requests
 from pathlib import Path
@@ -38,7 +40,22 @@ BATCH_SIZE = 32   # Larger batches are faster on CPU
 HOST = 'localhost'
 PORT = 8765
 SOCKET_PATH = '/tmp/ocr_server.sock'
-OLLAMA_URL = 'http://localhost:11434/api/generate'
+OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434/api/generate')
+
+# =============================================================================
+# Line Detection Constants
+# =============================================================================
+# DBSCAN clustering parameters for grouping text boxes into lines
+MIN_DBSCAN_EPS = 20       # Minimum epsilon for DBSCAN clustering (pixels)
+MAX_DBSCAN_EPS = 35       # Maximum epsilon for DBSCAN clustering (pixels)
+DBSCAN_EPS_RATIO = 0.3    # Ratio of average text height to use as epsilon
+
+# Column detection parameters
+COLUMN_GAP_RATIO = 0.15   # Ratio of image width that indicates a column gap
+
+# Minimum dimensions for valid text boxes
+MIN_BOX_WIDTH = 50        # Minimum width for deskew processing (pixels)
+MIN_BOX_HEIGHT = 15       # Minimum height for deskew processing (pixels)
 
 # Security: Allowed directories for file access (prevents path traversal attacks)
 # Add more directories as needed, or set to None to allow all (not recommended)
@@ -259,7 +276,7 @@ def deskew_crop(image: np.ndarray, max_angle: float = 10.0) -> np.ndarray:
     h, w = gray.shape
 
     # Skip small images
-    if w < 50 or h < 15:
+    if w < MIN_BOX_WIDTH or h < MIN_BOX_HEIGHT:
         return image
 
     # Threshold to binary
@@ -546,8 +563,86 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
         t2 = time.time()
         return detections, t2 - t1
 
+    def _cluster_boxes_by_y(self, boxes: List[Tuple]) -> List[int]:
+        """Cluster text boxes by y-center using DBSCAN.
+
+        Args:
+            boxes: List of (x, y, w, h, cy, text, conf) tuples
+
+        Returns:
+            List of cluster labels for each box
+        """
+        from sklearn.cluster import DBSCAN
+
+        if len(boxes) <= 1:
+            return [0] * len(boxes)
+
+        # Use conservative eps: ratio of average text height, capped
+        avg_height = np.mean([b[3] for b in boxes])  # b[3] is height
+        dynamic_eps = min(MAX_DBSCAN_EPS, max(MIN_DBSCAN_EPS, avg_height * DBSCAN_EPS_RATIO))
+
+        y_centers = np.array([[b[4]] for b in boxes])
+        clustering = DBSCAN(eps=dynamic_eps, min_samples=1).fit(y_centers)
+        return clustering.labels_.tolist()
+
+    def _split_by_column_gap(
+        self, line_boxes: List[Tuple], column_gap_threshold: float
+    ) -> List[List[Tuple]]:
+        """Split a line of boxes by large x-gaps indicating columns.
+
+        Args:
+            line_boxes: List of boxes sorted by x coordinate
+            column_gap_threshold: Minimum gap width to indicate a column break
+
+        Returns:
+            List of box groups, each representing a separate column item
+        """
+        if not line_boxes:
+            return []
+
+        split_lines = []
+        current_group = [line_boxes[0]]
+
+        for i in range(1, len(line_boxes)):
+            prev_box = line_boxes[i - 1]
+            curr_box = line_boxes[i]
+            gap = curr_box[0] - (prev_box[0] + prev_box[2])  # x gap between boxes
+
+            if gap > column_gap_threshold:
+                # Large gap - start new line (different column)
+                split_lines.append(current_group)
+                current_group = [curr_box]
+            else:
+                # Keep words together even with moderate gaps
+                current_group.append(curr_box)
+
+        split_lines.append(current_group)
+        return split_lines
+
+    def _calculate_line_bbox(self, group_boxes: List[Tuple]) -> Tuple[int, int, int, int]:
+        """Calculate the bounding box for a group of text boxes.
+
+        Args:
+            group_boxes: List of (x, y, w, h, text, conf) tuples
+
+        Returns:
+            Tuple of (x, y, width, height) for the combined bounding box
+        """
+        xs = [b[0] for b in group_boxes]
+        ys = [b[1] for b in group_boxes]
+        x2s = [b[0] + b[2] for b in group_boxes]
+        y2s = [b[1] + b[3] for b in group_boxes]
+
+        return (min(xs), min(ys), max(x2s) - min(xs), max(y2s) - min(ys))
+
     def _group_into_lines(self, detections: List, image_shape: Tuple[int, int, int]) -> Tuple[List, List, List]:
         """Group detected text regions into lines using DBSCAN clustering.
+
+        This method orchestrates the line grouping process:
+        1. Convert detections to bounding boxes
+        2. Cluster boxes by y-center (same row)
+        3. Split by column gaps within each row
+        4. Calculate final line bounding boxes
 
         Args:
             detections: List of EasyOCR detections (pts, text, confidence)
@@ -559,8 +654,6 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             - line_confidences: List of average confidence per line
             - easyocr_line_texts: List of concatenated EasyOCR text per line
         """
-        from sklearn.cluster import DBSCAN
-
         h_img, w_img = image_shape[:2]
 
         # Get bounding boxes with confidence
@@ -571,19 +664,10 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             cy = y + h // 2
             boxes.append((x, y, w, h, cy, det[1], det[2]))  # det[2] is confidence
 
-        # Cluster by y-center with conservative eps to avoid merging rows
-        if len(boxes) > 1:
-            # Use conservative eps: 30% of average text height, capped at 35px
-            avg_height = np.mean([b[3] for b in boxes])  # b[3] is height
-            dynamic_eps = min(35, max(20, avg_height * 0.3))  # Between 20-35px
+        # Cluster by y-center to group boxes on the same line
+        labels = self._cluster_boxes_by_y(boxes)
 
-            y_centers = np.array([[b[4]] for b in boxes])
-            clustering = DBSCAN(eps=dynamic_eps, min_samples=1).fit(y_centers)
-            labels = clustering.labels_
-        else:
-            labels = [0]
-
-        # Group boxes by line, track confidence per line
+        # Group boxes by line label
         lines = {}
         for i, (x, y, w, h, cy, text, conf) in enumerate(boxes):
             label = labels[i]
@@ -591,50 +675,30 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 lines[label] = []
             lines[label].append((x, y, w, h, text, conf))
 
+        # Calculate column gap threshold
+        column_gap_threshold = w_img * COLUMN_GAP_RATIO
+
         # Sort lines top to bottom, split by large x-gaps (columns)
         sorted_lines = []
         line_confidences = []
-        easyocr_line_texts = []  # Store concatenated EasyOCR text as fallback
-        column_gap_threshold = w_img * 0.15  # 15% of image width = column gap (~160px for 1080w)
+        easyocr_line_texts = []
 
         for label in sorted(lines.keys(), key=lambda l: np.mean([b[1] for b in lines[l]])):
             line_boxes = sorted(lines[label], key=lambda b: b[0])
 
-            # Split line by large x-gaps (detect columns only)
-            split_lines = []
-            current_group = [line_boxes[0]]
+            # Split line by column gaps
+            split_groups = self._split_by_column_gap(line_boxes, column_gap_threshold)
 
-            for i in range(1, len(line_boxes)):
-                prev_box = line_boxes[i - 1]
-                curr_box = line_boxes[i]
-                gap = curr_box[0] - (prev_box[0] + prev_box[2])  # x gap between boxes
-
-                if gap > column_gap_threshold:
-                    # Large gap - start new line (different column)
-                    split_lines.append(current_group)
-                    current_group = [curr_box]
-                else:
-                    # Keep words together even with moderate gaps
-                    current_group.append(curr_box)
-
-            split_lines.append(current_group)
-
-            # Add each split group as a separate line
-            for group_boxes in split_lines:
-                # Merge boxes into line bbox
-                xs = [b[0] for b in group_boxes]
-                ys = [b[1] for b in group_boxes]
-                x2s = [b[0] + b[2] for b in group_boxes]
-                y2s = [b[1] + b[3] for b in group_boxes]
-
-                line_bbox = (min(xs), min(ys), max(x2s) - min(xs), max(y2s) - min(ys))
+            # Process each split group as a separate line
+            for group_boxes in split_groups:
+                line_bbox = self._calculate_line_bbox(group_boxes)
                 sorted_lines.append((line_bbox, group_boxes))
 
-                # Concatenate EasyOCR text from all boxes in this line (as fallback)
-                easyocr_text = " ".join([b[4] for b in group_boxes])  # b[4] is the EasyOCR text
+                # Concatenate EasyOCR text from all boxes (b[4] is text)
+                easyocr_text = " ".join([b[4] for b in group_boxes])
                 easyocr_line_texts.append(easyocr_text)
 
-                # Average confidence for the line
+                # Average confidence for the line (b[5] is confidence)
                 avg_conf = np.mean([b[5] for b in group_boxes])
                 line_confidences.append(avg_conf)
 
@@ -999,8 +1063,9 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 error = json.dumps({"error": f"File not found: {e}"}).encode()
                 conn.sendall(struct.pack('>I', len(error)) + error)
             except Exception as e:
-                # Catch-all for unexpected errors - log full traceback
-                import traceback
+                # Intentional catch-all as last-resort handler for unexpected errors.
+                # All known error types are caught above; this prevents server crashes
+                # from unhandled exceptions while ensuring full tracebacks are logged.
                 print(f"[Server] Unexpected error: {e}")
                 traceback.print_exc()
                 error = json.dumps({"error": str(e)}).encode()
@@ -1010,7 +1075,22 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
 
 
 def send_request(action: str, **kwargs) -> dict:
-    """Send request to running server."""
+    """Send a request to the running OCR server via Unix socket.
+
+    Args:
+        action: The action to perform ('ocr', 'ping')
+        **kwargs: Additional parameters for the action:
+            - image_path: Path to image file (for 'ocr' action)
+            - verify: Enable vision verification (for 'ocr' action)
+            - max_verify: Maximum lines to verify (for 'ocr' action)
+
+    Returns:
+        dict: Server response containing OCR results or status
+
+    Raises:
+        ConnectionRefusedError: If the server is not running
+        socket.error: If there's a socket communication error
+    """
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(SOCKET_PATH)
 
@@ -1032,6 +1112,19 @@ def send_request(action: str, **kwargs) -> dict:
 
 
 def main():
+    """Main entry point for the OCR server CLI.
+
+    Commands:
+        serve: Start the OCR server (keeps TrOCR model loaded)
+        process <image_path>: Process an image using the running server
+            --verify: Enable LLaVA vision verification
+            --max-verify N: Maximum lines to verify (default: 2)
+        ping: Check if server is running
+
+    Example:
+        python ocr_server.py serve &
+        python ocr_server.py process image.jpg --verify
+    """
     if len(sys.argv) < 2:
         print(__doc__)
         return

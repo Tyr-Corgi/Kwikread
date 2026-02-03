@@ -24,8 +24,10 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-# Suppress warnings
-warnings.filterwarnings("ignore")
+# Suppress specific warnings from dependencies (instead of blanket suppression)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pkg_resources")
 
 
 # =============================================================================
@@ -443,7 +445,7 @@ class OCREngine:
                     if texts:
                         return " ".join(texts), sum(confs) / len(confs)
             except Exception as e:
-                pass
+                print(f"[OCR] PaddleOCR recognize_line error: {e}")
 
         elif self.engine_name == "easyocr":
             try:
@@ -453,14 +455,14 @@ class OCREngine:
                     confs = [item[2] for item in result]
                     return " ".join(texts), sum(confs) / len(confs) if confs else 0.0
             except Exception as e:
-                pass
+                print(f"[OCR] EasyOCR recognize_line error: {e}")
 
         elif self.engine_name == "tesseract":
             try:
                 text = self.engine.image_to_string(line_image).strip()
                 return text, 0.5  # Tesseract doesn't give confidence easily
             except Exception as e:
-                pass
+                print(f"[OCR] Tesseract recognize_line error: {e}")
 
         elif self.engine_name == "trocr":
             try:
@@ -524,7 +526,6 @@ class OCREngine:
 
                 # POST-PROCESSING: Clean up TrOCR word output
                 # Remove spurious periods/punctuation (common TrOCR artifact)
-                import re
                 text = re.sub(r'\s*[.,;:]\s*', ' ', text)
                 text = re.sub(r'\s+', ' ', text).strip()
                 # Line-level corrections happen after words are grouped
