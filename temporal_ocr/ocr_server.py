@@ -462,36 +462,36 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
 
         return trocr_text
 
-    def process_image(self, image_path: str, verify: bool = False, max_verify: int = 2) -> dict:
-        """Full OCR pipeline on an image.
+    def _detect_text_regions(self, image: np.ndarray) -> Tuple[List, float]:
+        """Detect text regions using EasyOCR.
 
         Args:
-            image_path: Path to image file
-            verify: Enable selective LLaVA verification on low-confidence lines
-            max_verify: Maximum number of lines to verify (default: 2)
+            image: BGR numpy array of the image
+
+        Returns:
+            Tuple of (detections list, detection time in seconds)
         """
-        t0 = time.time()
-
-        # Load image
-        image = cv2.imread(image_path)
-        if image is None:
-            return {"error": f"Could not load: {image_path}"}
-
-        # Detect text regions
         t1 = time.time()
         detections = self.detect_lines(image)
         t2 = time.time()
+        return detections, t2 - t1
 
-        if not detections:
-            return {
-                "image_path": image_path,
-                "lines": [],
-                "full_text": "",
-                "timing": {"total": time.time() - t0}
-            }
+    def _group_into_lines(self, detections: List, image_shape: Tuple[int, int, int]) -> Tuple[List, List, List]:
+        """Group detected text regions into lines using DBSCAN clustering.
 
-        # Group into lines and crop
+        Args:
+            detections: List of EasyOCR detections (pts, text, confidence)
+            image_shape: Shape of the image (h, w, channels)
+
+        Returns:
+            Tuple of (sorted_lines, line_confidences, easyocr_line_texts)
+            - sorted_lines: List of (line_bbox, group_boxes) tuples
+            - line_confidences: List of average confidence per line
+            - easyocr_line_texts: List of concatenated EasyOCR text per line
+        """
         from sklearn.cluster import DBSCAN
+
+        h_img, w_img = image_shape[:2]
 
         # Get bounding boxes with confidence
         boxes = []
@@ -525,7 +525,6 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
         sorted_lines = []
         line_confidences = []
         easyocr_line_texts = []  # Store concatenated EasyOCR text as fallback
-        h_img, w_img = image.shape[:2]
         column_gap_threshold = w_img * 0.15  # 15% of image width = column gap (~160px for 1080w)
 
         for label in sorted(lines.keys(), key=lambda l: np.mean([b[1] for b in lines[l]])):
@@ -569,6 +568,22 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 avg_conf = np.mean([b[5] for b in group_boxes])
                 line_confidences.append(avg_conf)
 
+        return sorted_lines, line_confidences, easyocr_line_texts
+
+    def _crop_and_preprocess(self, image: np.ndarray, sorted_lines: List) -> Tuple[List[Image.Image], List]:
+        """Crop line regions and preprocess for recognition.
+
+        Args:
+            image: BGR numpy array of the image
+            sorted_lines: List of (line_bbox, group_boxes) tuples from _group_into_lines
+
+        Returns:
+            Tuple of (preprocessed PIL crops, crop_bboxes with raw crops)
+            - crops: List of preprocessed PIL Images ready for TrOCR
+            - crop_bboxes: List of (x, y, w, h, raw_crop) tuples for each line
+        """
+        h_img, w_img = image.shape[:2]
+
         # Crop lines with adaptive padding based on text size
         raw_crops = []
         crop_bboxes = []
@@ -598,8 +613,18 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 idx, pil_crop = future.result()
                 crops[idx] = pil_crop
 
-        t3 = time.time()
+        return crops, crop_bboxes
 
+    def _recognize_text(self, crops: List[Image.Image], crop_bboxes: List) -> List[str]:
+        """Recognize text from preprocessed crops with retry logic for empty results.
+
+        Args:
+            crops: List of preprocessed PIL Images
+            crop_bboxes: List of (x, y, w, h, raw_crop) tuples for retry preprocessing
+
+        Returns:
+            List of recognized text strings, one per crop
+        """
         # Batch recognize
         texts = self.recognize_batch(crops)
 
@@ -625,73 +650,89 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                         print(f"[Retry] Line {i}: Empty result recovered with style='{style}' -> '{retry_texts[0]}'")
                         break
 
-        t4 = time.time()
+        return texts
 
-        # Determine which lines to verify (lowest confidence)
-        lines_to_verify = set()
-        if verify and max_verify > 0:
-            # Get indices of lowest confidence lines
-            sorted_by_conf = sorted(range(len(line_confidences)),
-                                   key=lambda i: line_confidences[i])
-            lines_to_verify = set(sorted_by_conf[:max_verify])
-            print(f"[Verify] Will verify {len(lines_to_verify)} lowest confidence lines")
+    @staticmethod
+    def _looks_like_garbage(txt: str) -> bool:
+        """Check if text looks like OCR garbage (special chars, no vowels, etc).
 
-        # Apply strikethrough filtering and optional vision verification
+        Args:
+            txt: Text string to check
+
+        Returns:
+            True if text appears to be garbage, False otherwise
+        """
+        if not txt or len(txt) < 2:
+            return True
+
+        # Clean punctuation from ends for analysis
+        txt_clean = txt.strip().rstrip('.,;:!?')
+
+        # Extended special char list
+        special_chars = sum(1 for c in txt_clean if c in '|;{}[]<>$+@#%^&*()')
+        alpha_chars = sum(1 for c in txt_clean if c.isalpha())
+
+        # More than 15% special chars = garbage
+        if alpha_chars == 0 or (special_chars / max(1, len(txt_clean)) > 0.15):
+            return True
+
+        # Check for fragmented/nonsense words (no vowels or too short)
+        words = [w for w in txt_clean.replace('-', ' ').split() if w.strip()]
+        vowels = set('aeiouAEIOU')
+        nonsense_words = 0
+        real_words = 0
+
+        for word in words:
+            word_clean = ''.join(c for c in word if c.isalpha())
+            if len(word_clean) == 0:
+                continue  # Skip punctuation-only "words"
+            real_words += 1
+            # Words with no vowels are suspicious (unless very short like "2%")
+            if len(word_clean) > 2 and not any(c in vowels for c in word_clean):
+                nonsense_words += 1
+
+        # If more than 50% of real words are nonsense, it's garbage
+        if real_words > 0 and nonsense_words / real_words > 0.5:
+            return True
+
+        return False
+
+    def _filter_and_correct_results(
+        self,
+        texts: List[str],
+        crop_bboxes: List,
+        line_confidences: List[float],
+        easyocr_line_texts: List[str],
+        lines_to_verify: set,
+        verify: bool
+    ) -> Tuple[List[dict], float, int]:
+        """Apply filtering and corrections to recognized text.
+
+        Args:
+            texts: List of recognized text strings
+            crop_bboxes: List of (x, y, w, h, raw_crop) tuples
+            line_confidences: List of confidence scores per line
+            easyocr_line_texts: List of EasyOCR fallback text per line
+            lines_to_verify: Set of line indices to verify with vision
+            verify: Whether verification is enabled
+
+        Returns:
+            Tuple of (results list, total verification time, verified count)
+        """
         results = []
         t_verify = 0
         verified_count = 0
+
         for i, (bbox_info, text) in enumerate(zip(crop_bboxes, texts)):
             x, y, w, h, crop_img = bbox_info
             confidence = line_confidences[i]
             easyocr_text = easyocr_line_texts[i] if i < len(easyocr_line_texts) else ""
 
             # Compare TrOCR vs EasyOCR - only use EasyOCR when it's clearly better
-            # Be conservative: EasyOCR can have garbage too
-            trocr_words = len(text.split()) if text else 0
-            easyocr_words = len(easyocr_text.split()) if easyocr_text else 0
-
-            # Heuristic: check if text looks like garbage
-            def looks_like_garbage(txt):
-                if not txt or len(txt) < 2:
-                    return True
-
-                # Clean punctuation from ends for analysis
-                txt_clean = txt.strip().rstrip('.,;:!?')
-
-                # Extended special char list
-                special_chars = sum(1 for c in txt_clean if c in '|;{}[]<>$+@#%^&*()')
-                alpha_chars = sum(1 for c in txt_clean if c.isalpha())
-
-                # More than 15% special chars = garbage
-                if alpha_chars == 0 or (special_chars / max(1, len(txt_clean)) > 0.15):
-                    return True
-
-                # Check for fragmented/nonsense words (no vowels or too short)
-                words = [w for w in txt_clean.replace('-', ' ').split() if w.strip()]
-                vowels = set('aeiouAEIOU')
-                nonsense_words = 0
-                real_words = 0
-
-                for word in words:
-                    word_clean = ''.join(c for c in word if c.isalpha())
-                    if len(word_clean) == 0:
-                        continue  # Skip punctuation-only "words"
-                    real_words += 1
-                    # Words with no vowels are suspicious (unless very short like "2%")
-                    if len(word_clean) > 2 and not any(c in vowels for c in word_clean):
-                        nonsense_words += 1
-
-                # If more than 50% of real words are nonsense, it's garbage
-                if real_words > 0 and nonsense_words / real_words > 0.5:
-                    return True
-
-                return False
-
-            trocr_is_garbage = looks_like_garbage(text)
-            easyocr_is_garbage = looks_like_garbage(easyocr_text)
+            trocr_is_garbage = self._looks_like_garbage(text)
+            easyocr_is_garbage = self._looks_like_garbage(easyocr_text)
 
             # Only use EasyOCR if TrOCR is garbage AND EasyOCR is clearly better
-            # Be VERY conservative - TrOCR is generally more accurate
             use_easyocr = False
             if not text and easyocr_text and not easyocr_is_garbage:
                 use_easyocr = True
@@ -742,14 +783,69 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 "corrected": corrected
             })
 
-        t5 = time.time()
+        return results, t_verify, verified_count
+
+    def process_image(self, image_path: str, verify: bool = False, max_verify: int = 2) -> dict:
+        """Full OCR pipeline on an image.
+
+        Args:
+            image_path: Path to image file
+            verify: Enable selective LLaVA verification on low-confidence lines
+            max_verify: Maximum number of lines to verify (default: 2)
+        """
+        t0 = time.time()
+
+        # Load image
+        image = cv2.imread(image_path)
+        if image is None:
+            return {"error": f"Could not load: {image_path}"}
+
+        # Detect text regions
+        detections, detection_time = self._detect_text_regions(image)
+
+        if not detections:
+            return {
+                "image_path": image_path,
+                "lines": [],
+                "full_text": "",
+                "timing": {"total": time.time() - t0}
+            }
+
+        # Group detections into lines using DBSCAN clustering
+        sorted_lines, line_confidences, easyocr_line_texts = self._group_into_lines(
+            detections, image.shape
+        )
+
+        # Crop and preprocess line regions
+        crops, crop_bboxes = self._crop_and_preprocess(image, sorted_lines)
+        t_grouping = time.time()
+
+        # Recognize text with retry logic for empty results
+        texts = self._recognize_text(crops, crop_bboxes)
+        t_recognition = time.time()
+
+        # Determine which lines to verify (lowest confidence)
+        lines_to_verify = set()
+        if verify and max_verify > 0:
+            # Get indices of lowest confidence lines
+            sorted_by_conf = sorted(range(len(line_confidences)),
+                                   key=lambda i: line_confidences[i])
+            lines_to_verify = set(sorted_by_conf[:max_verify])
+            print(f"[Verify] Will verify {len(lines_to_verify)} lowest confidence lines")
+
+        # Apply filtering and corrections
+        results, t_verify, verified_count = self._filter_and_correct_results(
+            texts, crop_bboxes, line_confidences, easyocr_line_texts,
+            lines_to_verify, verify
+        )
+        t_filtering = time.time()
 
         timing = {
-            "detection": round(t2 - t1, 2),
-            "grouping": round(t3 - t2, 2),
-            "recognition": round(t4 - t3, 2),
-            "filtering": round(t5 - t4 - t_verify, 2),
-            "total": round(t5 - t0, 2)
+            "detection": round(detection_time, 2),
+            "grouping": round(t_grouping - t0 - detection_time, 2),
+            "recognition": round(t_recognition - t_grouping, 2),
+            "filtering": round(t_filtering - t_recognition - t_verify, 2),
+            "total": round(t_filtering - t0, 2)
         }
         if verify:
             timing["verification"] = round(t_verify, 2)
