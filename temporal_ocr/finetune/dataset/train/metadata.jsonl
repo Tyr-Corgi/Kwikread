@@ -1,0 +1,280 @@
+{"file_name": "train_0000.png", "text": "mint"}
+{"file_name": "train_0000_bright0.8.png", "text": "mint"}
+{"file_name": "train_0000_bright1.2.png", "text": "mint"}
+{"file_name": "train_0000_contrast0.8.png", "text": "mint"}
+{"file_name": "train_0000_contrast1.2.png", "text": "mint"}
+{"file_name": "train_0000_rot-3.png", "text": "mint"}
+{"file_name": "train_0000_rot3.png", "text": "mint"}
+{"file_name": "train_0001.png", "text": "Tortilla"}
+{"file_name": "train_0001_bright0.8.png", "text": "Tortilla"}
+{"file_name": "train_0001_bright1.2.png", "text": "Tortilla"}
+{"file_name": "train_0001_contrast0.8.png", "text": "Tortilla"}
+{"file_name": "train_0001_contrast1.2.png", "text": "Tortilla"}
+{"file_name": "train_0001_rot-3.png", "text": "Tortilla"}
+{"file_name": "train_0001_rot3.png", "text": "Tortilla"}
+{"file_name": "train_0002.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0002_bright0.8.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0002_bright1.2.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0002_contrast0.8.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0002_contrast1.2.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0002_rot-3.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0002_rot3.png", "text": "PROTEIN BARS"}
+{"file_name": "train_0003.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0003_bright0.8.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0003_bright1.2.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0003_contrast0.8.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0003_contrast1.2.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0003_rot-3.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0003_rot3.png", "text": "Oats - Coldcut"}
+{"file_name": "train_0004.png", "text": "apple sauce"}
+{"file_name": "train_0004_bright0.8.png", "text": "apple sauce"}
+{"file_name": "train_0004_bright1.2.png", "text": "apple sauce"}
+{"file_name": "train_0004_contrast0.8.png", "text": "apple sauce"}
+{"file_name": "train_0004_contrast1.2.png", "text": "apple sauce"}
+{"file_name": "train_0004_rot-3.png", "text": "apple sauce"}
+{"file_name": "train_0004_rot3.png", "text": "apple sauce"}
+{"file_name": "train_0005.png", "text": "OAT MILK"}
+{"file_name": "train_0005_bright0.8.png", "text": "OAT MILK"}
+{"file_name": "train_0005_bright1.2.png", "text": "OAT MILK"}
+{"file_name": "train_0005_contrast0.8.png", "text": "OAT MILK"}
+{"file_name": "train_0005_contrast1.2.png", "text": "OAT MILK"}
+{"file_name": "train_0005_rot-3.png", "text": "OAT MILK"}
+{"file_name": "train_0005_rot3.png", "text": "OAT MILK"}
+{"file_name": "train_0006.png", "text": "milk"}
+{"file_name": "train_0006_bright0.8.png", "text": "milk"}
+{"file_name": "train_0006_bright1.2.png", "text": "milk"}
+{"file_name": "train_0006_contrast0.8.png", "text": "milk"}
+{"file_name": "train_0006_contrast1.2.png", "text": "milk"}
+{"file_name": "train_0006_rot-3.png", "text": "milk"}
+{"file_name": "train_0006_rot3.png", "text": "milk"}
+{"file_name": "train_0007.png", "text": "vanilla"}
+{"file_name": "train_0007_bright0.8.png", "text": "vanilla"}
+{"file_name": "train_0007_bright1.2.png", "text": "vanilla"}
+{"file_name": "train_0007_contrast0.8.png", "text": "vanilla"}
+{"file_name": "train_0007_contrast1.2.png", "text": "vanilla"}
+{"file_name": "train_0007_rot-3.png", "text": "vanilla"}
+{"file_name": "train_0007_rot3.png", "text": "vanilla"}
+{"file_name": "train_0008.png", "text": "Cheese"}
+{"file_name": "train_0008_bright0.8.png", "text": "Cheese"}
+{"file_name": "train_0008_bright1.2.png", "text": "Cheese"}
+{"file_name": "train_0008_contrast0.8.png", "text": "Cheese"}
+{"file_name": "train_0008_contrast1.2.png", "text": "Cheese"}
+{"file_name": "train_0008_rot-3.png", "text": "Cheese"}
+{"file_name": "train_0008_rot3.png", "text": "Cheese"}
+{"file_name": "train_0009.png", "text": "Trail Mix"}
+{"file_name": "train_0009_bright0.8.png", "text": "Trail Mix"}
+{"file_name": "train_0009_bright1.2.png", "text": "Trail Mix"}
+{"file_name": "train_0009_contrast0.8.png", "text": "Trail Mix"}
+{"file_name": "train_0009_contrast1.2.png", "text": "Trail Mix"}
+{"file_name": "train_0009_rot-3.png", "text": "Trail Mix"}
+{"file_name": "train_0009_rot3.png", "text": "Trail Mix"}
+{"file_name": "train_0010.png", "text": "ice cream"}
+{"file_name": "train_0010_bright0.8.png", "text": "ice cream"}
+{"file_name": "train_0010_bright1.2.png", "text": "ice cream"}
+{"file_name": "train_0010_contrast0.8.png", "text": "ice cream"}
+{"file_name": "train_0010_contrast1.2.png", "text": "ice cream"}
+{"file_name": "train_0010_rot-3.png", "text": "ice cream"}
+{"file_name": "train_0010_rot3.png", "text": "ice cream"}
+{"file_name": "train_0011.png", "text": "potato"}
+{"file_name": "train_0011_bright0.8.png", "text": "potato"}
+{"file_name": "train_0011_bright1.2.png", "text": "potato"}
+{"file_name": "train_0011_contrast0.8.png", "text": "potato"}
+{"file_name": "train_0011_contrast1.2.png", "text": "potato"}
+{"file_name": "train_0011_rot-3.png", "text": "potato"}
+{"file_name": "train_0011_rot3.png", "text": "potato"}
+{"file_name": "train_0012.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0012_bright0.8.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0012_bright1.2.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0012_contrast0.8.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0012_contrast1.2.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0012_rot-3.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0012_rot3.png", "text": "Philsbury Cookie Dough"}
+{"file_name": "train_0013.png", "text": "Strawberry"}
+{"file_name": "train_0013_bright0.8.png", "text": "Strawberry"}
+{"file_name": "train_0013_bright1.2.png", "text": "Strawberry"}
+{"file_name": "train_0013_contrast0.8.png", "text": "Strawberry"}
+{"file_name": "train_0013_contrast1.2.png", "text": "Strawberry"}
+{"file_name": "train_0013_rot-3.png", "text": "Strawberry"}
+{"file_name": "train_0013_rot3.png", "text": "Strawberry"}
+{"file_name": "train_0014.png", "text": "rice milk"}
+{"file_name": "train_0014_bright0.8.png", "text": "rice milk"}
+{"file_name": "train_0014_bright1.2.png", "text": "rice milk"}
+{"file_name": "train_0014_contrast0.8.png", "text": "rice milk"}
+{"file_name": "train_0014_contrast1.2.png", "text": "rice milk"}
+{"file_name": "train_0014_rot-3.png", "text": "rice milk"}
+{"file_name": "train_0014_rot3.png", "text": "rice milk"}
+{"file_name": "train_0015.png", "text": "cereal"}
+{"file_name": "train_0015_bright0.8.png", "text": "cereal"}
+{"file_name": "train_0015_bright1.2.png", "text": "cereal"}
+{"file_name": "train_0015_contrast0.8.png", "text": "cereal"}
+{"file_name": "train_0015_contrast1.2.png", "text": "cereal"}
+{"file_name": "train_0015_rot-3.png", "text": "cereal"}
+{"file_name": "train_0015_rot3.png", "text": "cereal"}
+{"file_name": "train_0112.png", "text": "Cheese"}
+{"file_name": "train_0112_bright0.8.png", "text": "Cheese"}
+{"file_name": "train_0112_bright1.2.png", "text": "Cheese"}
+{"file_name": "train_0112_contrast0.8.png", "text": "Cheese"}
+{"file_name": "train_0112_contrast1.2.png", "text": "Cheese"}
+{"file_name": "train_0112_rot-3.png", "text": "Cheese"}
+{"file_name": "train_0112_rot3.png", "text": "Cheese"}
+{"file_name": "train_0113.png", "text": "Black beans"}
+{"file_name": "train_0113_bright0.8.png", "text": "Black beans"}
+{"file_name": "train_0113_bright1.2.png", "text": "Black beans"}
+{"file_name": "train_0113_contrast0.8.png", "text": "Black beans"}
+{"file_name": "train_0113_contrast1.2.png", "text": "Black beans"}
+{"file_name": "train_0113_rot-3.png", "text": "Black beans"}
+{"file_name": "train_0113_rot3.png", "text": "Black beans"}
+{"file_name": "train_0114.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0114_bright0.8.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0114_bright1.2.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0114_contrast0.8.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0114_contrast1.2.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0114_rot-3.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0114_rot3.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0115.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0115_bright0.8.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0115_bright1.2.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0115_contrast0.8.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0115_contrast1.2.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0115_rot-3.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0115_rot3.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0116.png", "text": "Green beans Peas"}
+{"file_name": "train_0116_bright0.8.png", "text": "Green beans Peas"}
+{"file_name": "train_0116_bright1.2.png", "text": "Green beans Peas"}
+{"file_name": "train_0116_contrast0.8.png", "text": "Green beans Peas"}
+{"file_name": "train_0116_contrast1.2.png", "text": "Green beans Peas"}
+{"file_name": "train_0116_rot-3.png", "text": "Green beans Peas"}
+{"file_name": "train_0116_rot3.png", "text": "Green beans Peas"}
+{"file_name": "train_0117.png", "text": "Carrots"}
+{"file_name": "train_0117_bright0.8.png", "text": "Carrots"}
+{"file_name": "train_0117_bright1.2.png", "text": "Carrots"}
+{"file_name": "train_0117_contrast0.8.png", "text": "Carrots"}
+{"file_name": "train_0117_contrast1.2.png", "text": "Carrots"}
+{"file_name": "train_0117_rot-3.png", "text": "Carrots"}
+{"file_name": "train_0117_rot3.png", "text": "Carrots"}
+{"file_name": "train_0118.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0118_bright0.8.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0118_bright1.2.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0118_contrast0.8.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0118_contrast1.2.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0118_rot-3.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0118_rot3.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0119.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0119_bright0.8.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0119_bright1.2.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0119_contrast0.8.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0119_contrast1.2.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0119_rot-3.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0119_rot3.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0120.png", "text": "Doritos Coffee"}
+{"file_name": "train_0120_bright0.8.png", "text": "Doritos Coffee"}
+{"file_name": "train_0120_bright1.2.png", "text": "Doritos Coffee"}
+{"file_name": "train_0120_contrast0.8.png", "text": "Doritos Coffee"}
+{"file_name": "train_0120_contrast1.2.png", "text": "Doritos Coffee"}
+{"file_name": "train_0120_rot-3.png", "text": "Doritos Coffee"}
+{"file_name": "train_0120_rot3.png", "text": "Doritos Coffee"}
+{"file_name": "train_0121.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0121_bright0.8.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0121_bright1.2.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0121_contrast0.8.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0121_contrast1.2.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0121_rot-3.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0121_rot3.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0122.png", "text": "Milk Cat Food"}
+{"file_name": "train_0122_bright0.8.png", "text": "Milk Cat Food"}
+{"file_name": "train_0122_bright1.2.png", "text": "Milk Cat Food"}
+{"file_name": "train_0122_contrast0.8.png", "text": "Milk Cat Food"}
+{"file_name": "train_0122_contrast1.2.png", "text": "Milk Cat Food"}
+{"file_name": "train_0122_rot-3.png", "text": "Milk Cat Food"}
+{"file_name": "train_0122_rot3.png", "text": "Milk Cat Food"}
+{"file_name": "train_0123.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0123_bright0.8.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0123_bright1.2.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0123_contrast0.8.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0123_contrast1.2.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0123_rot-3.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0123_rot3.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0196.png", "text": "Cheese"}
+{"file_name": "train_0196_bright0.8.png", "text": "Cheese"}
+{"file_name": "train_0196_bright1.2.png", "text": "Cheese"}
+{"file_name": "train_0196_contrast0.8.png", "text": "Cheese"}
+{"file_name": "train_0196_contrast1.2.png", "text": "Cheese"}
+{"file_name": "train_0196_rot-3.png", "text": "Cheese"}
+{"file_name": "train_0196_rot3.png", "text": "Cheese"}
+{"file_name": "train_0197.png", "text": "Black beans"}
+{"file_name": "train_0197_bright0.8.png", "text": "Black beans"}
+{"file_name": "train_0197_bright1.2.png", "text": "Black beans"}
+{"file_name": "train_0197_contrast0.8.png", "text": "Black beans"}
+{"file_name": "train_0197_contrast1.2.png", "text": "Black beans"}
+{"file_name": "train_0197_rot-3.png", "text": "Black beans"}
+{"file_name": "train_0197_rot3.png", "text": "Black beans"}
+{"file_name": "train_0198.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0198_bright0.8.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0198_bright1.2.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0198_contrast0.8.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0198_contrast1.2.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0198_rot-3.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0198_rot3.png", "text": "Broccoli Cookies"}
+{"file_name": "train_0199.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0199_bright0.8.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0199_bright1.2.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0199_contrast0.8.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0199_contrast1.2.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0199_rot-3.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0199_rot3.png", "text": "Chia Seeds Ramen Noodles"}
+{"file_name": "train_0200.png", "text": "Green beans Peas"}
+{"file_name": "train_0200_bright0.8.png", "text": "Green beans Peas"}
+{"file_name": "train_0200_bright1.2.png", "text": "Green beans Peas"}
+{"file_name": "train_0200_contrast0.8.png", "text": "Green beans Peas"}
+{"file_name": "train_0200_contrast1.2.png", "text": "Green beans Peas"}
+{"file_name": "train_0200_rot-3.png", "text": "Green beans Peas"}
+{"file_name": "train_0200_rot3.png", "text": "Green beans Peas"}
+{"file_name": "train_0201.png", "text": "Carrots"}
+{"file_name": "train_0201_bright0.8.png", "text": "Carrots"}
+{"file_name": "train_0201_bright1.2.png", "text": "Carrots"}
+{"file_name": "train_0201_contrast0.8.png", "text": "Carrots"}
+{"file_name": "train_0201_contrast1.2.png", "text": "Carrots"}
+{"file_name": "train_0201_rot-3.png", "text": "Carrots"}
+{"file_name": "train_0201_rot3.png", "text": "Carrots"}
+{"file_name": "train_0202.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0202_bright0.8.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0202_bright1.2.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0202_contrast0.8.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0202_contrast1.2.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0202_rot-3.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0202_rot3.png", "text": "Frozen Pizza Soda"}
+{"file_name": "train_0203.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0203_bright0.8.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0203_bright1.2.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0203_contrast0.8.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0203_contrast1.2.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0203_rot-3.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0203_rot3.png", "text": "Tortillas Nestle Strawberry"}
+{"file_name": "train_0204.png", "text": "Doritos Coffee"}
+{"file_name": "train_0204_bright0.8.png", "text": "Doritos Coffee"}
+{"file_name": "train_0204_bright1.2.png", "text": "Doritos Coffee"}
+{"file_name": "train_0204_contrast0.8.png", "text": "Doritos Coffee"}
+{"file_name": "train_0204_contrast1.2.png", "text": "Doritos Coffee"}
+{"file_name": "train_0204_rot-3.png", "text": "Doritos Coffee"}
+{"file_name": "train_0204_rot3.png", "text": "Doritos Coffee"}
+{"file_name": "train_0205.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0205_bright0.8.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0205_bright1.2.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0205_contrast0.8.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0205_contrast1.2.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0205_rot-3.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0205_rot3.png", "text": "Apple Sauce Pretzels"}
+{"file_name": "train_0206.png", "text": "Milk Cat Food"}
+{"file_name": "train_0206_bright0.8.png", "text": "Milk Cat Food"}
+{"file_name": "train_0206_bright1.2.png", "text": "Milk Cat Food"}
+{"file_name": "train_0206_contrast0.8.png", "text": "Milk Cat Food"}
+{"file_name": "train_0206_contrast1.2.png", "text": "Milk Cat Food"}
+{"file_name": "train_0206_rot-3.png", "text": "Milk Cat Food"}
+{"file_name": "train_0206_rot3.png", "text": "Milk Cat Food"}
+{"file_name": "train_0207.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0207_bright0.8.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0207_bright1.2.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0207_contrast0.8.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0207_contrast1.2.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0207_rot-3.png", "text": "Ground Beef Chai tea"}
+{"file_name": "train_0207_rot3.png", "text": "Ground Beef Chai tea"}

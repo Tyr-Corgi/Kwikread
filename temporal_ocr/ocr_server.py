@@ -40,6 +40,12 @@ PORT = 8765
 SOCKET_PATH = '/tmp/ocr_server.sock'
 OLLAMA_URL = 'http://localhost:11434/api/generate'
 
+# Model paths - fine-tuned model preferred if available (v3 trained on IAM + grocery + videotest3)
+FINETUNED_MODEL_PATH = Path(__file__).parent / "finetune" / "model_v3" / "final"
+FINETUNED_MODEL_V2_PATH = Path(__file__).parent / "finetune" / "model_v2" / "final"
+FINETUNED_MODEL_V1_PATH = Path(__file__).parent / "finetune" / "model" / "final"
+BASE_MODEL_NAME = 'microsoft/trocr-base-handwritten'
+
 
 def preprocess_crop(crop_img: np.ndarray, style: str = 'auto') -> Image.Image:
     """
@@ -294,12 +300,20 @@ class OCRServer:
         torch.set_num_threads(NUM_WORKERS)
         torch.set_num_interop_threads(2)
 
-        self.processor = TrOCRProcessor.from_pretrained(
-            'microsoft/trocr-base-handwritten'
-        )
-        self.model = VisionEncoderDecoderModel.from_pretrained(
-            'microsoft/trocr-base-handwritten'
-        )
+        # Use fine-tuned model if available, otherwise fall back to base model
+        # Prefer v2 (IAM + grocery) > v1 (grocery only) > base model
+        if FINETUNED_MODEL_PATH.exists():
+            model_path = str(FINETUNED_MODEL_PATH)
+            print(f"[Server] Using fine-tuned model v2 (IAM + grocery): {model_path}")
+        elif FINETUNED_MODEL_V1_PATH.exists():
+            model_path = str(FINETUNED_MODEL_V1_PATH)
+            print(f"[Server] Using fine-tuned model v1 (grocery): {model_path}")
+        else:
+            model_path = BASE_MODEL_NAME
+            print(f"[Server] Using base model: {model_path}")
+
+        self.processor = TrOCRProcessor.from_pretrained(model_path)
+        self.model = VisionEncoderDecoderModel.from_pretrained(model_path)
 
         # Use MPS (Metal) on Mac, CUDA on Linux/Windows, CPU fallback
         if torch.backends.mps.is_available():
@@ -386,9 +400,11 @@ class OCRServer:
                     padding=True
                 ).pixel_values.to(self.device)
 
+                # Greedy decoding for speed (<6s requirement)
+                # Post-processing corrections handle most OCR errors
                 generated_ids = self.model.generate(
                     pixel_values,
-                    max_new_tokens=50
+                    max_new_tokens=20  # Grocery items are short (1-3 words)
                 )
 
                 texts = self.processor.batch_decode(
@@ -626,19 +642,48 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             trocr_words = len(text.split()) if text else 0
             easyocr_words = len(easyocr_text.split()) if easyocr_text else 0
 
-            # Heuristic: check if text looks like garbage (many special chars)
+            # Heuristic: check if text looks like garbage
             def looks_like_garbage(txt):
                 if not txt or len(txt) < 2:
                     return True
-                special_chars = sum(1 for c in txt if c in '|;{}[]<>$+@#%^&*()')
-                alpha_chars = sum(1 for c in txt if c.isalpha())
-                # More than 20% special chars = garbage
-                return alpha_chars == 0 or (special_chars / max(1, len(txt)) > 0.2)
+
+                # Clean punctuation from ends for analysis
+                txt_clean = txt.strip().rstrip('.,;:!?')
+
+                # Extended special char list
+                special_chars = sum(1 for c in txt_clean if c in '|;{}[]<>$+@#%^&*()')
+                alpha_chars = sum(1 for c in txt_clean if c.isalpha())
+
+                # More than 15% special chars = garbage
+                if alpha_chars == 0 or (special_chars / max(1, len(txt_clean)) > 0.15):
+                    return True
+
+                # Check for fragmented/nonsense words (no vowels or too short)
+                words = [w for w in txt_clean.replace('-', ' ').split() if w.strip()]
+                vowels = set('aeiouAEIOU')
+                nonsense_words = 0
+                real_words = 0
+
+                for word in words:
+                    word_clean = ''.join(c for c in word if c.isalpha())
+                    if len(word_clean) == 0:
+                        continue  # Skip punctuation-only "words"
+                    real_words += 1
+                    # Words with no vowels are suspicious (unless very short like "2%")
+                    if len(word_clean) > 2 and not any(c in vowels for c in word_clean):
+                        nonsense_words += 1
+
+                # If more than 50% of real words are nonsense, it's garbage
+                if real_words > 0 and nonsense_words / real_words > 0.5:
+                    return True
+
+                return False
 
             trocr_is_garbage = looks_like_garbage(text)
             easyocr_is_garbage = looks_like_garbage(easyocr_text)
 
-            # Only use EasyOCR if TrOCR is garbage AND EasyOCR is not garbage
+            # Only use EasyOCR if TrOCR is garbage AND EasyOCR is clearly better
+            # Be VERY conservative - TrOCR is generally more accurate
             use_easyocr = False
             if not text and easyocr_text and not easyocr_is_garbage:
                 use_easyocr = True
@@ -646,10 +691,6 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             elif trocr_is_garbage and not easyocr_is_garbage:
                 use_easyocr = True
                 print(f"[Fallback] Line {i}: TrOCR garbage '{text}', using EasyOCR '{easyocr_text}'")
-            elif easyocr_words > trocr_words and easyocr_words <= trocr_words + 3 and not easyocr_is_garbage:
-                # EasyOCR has more words - likely a multi-word item that TrOCR truncated
-                use_easyocr = True
-                print(f"[Merge] Line {i}: Using EasyOCR '{easyocr_text}' over TrOCR '{text}' ({easyocr_words} vs {trocr_words} words)")
 
             if use_easyocr:
                 text = easyocr_text

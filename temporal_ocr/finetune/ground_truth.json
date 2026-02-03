@@ -1,0 +1,55 @@
+{
+  "_comment": "Ground truth labels for fine-tuning TrOCR on handwritten grocery lists",
+  "_instructions": "Edit labels to match EXACTLY what is written in each crop image. The model learns from these labels.",
+
+  "videotest2": {
+    "source_image": "videotest2_frame.png",
+    "crops_dir": "videotest2_v14/crops/videotest2_frame",
+    "labels": {
+      "line_00.png": "Rice",
+      "line_01.png": "Philsbury Cookie Dough",
+      "line_02.png": "rice milk",
+      "line_03.png": "Rhodes Rolls",
+      "line_04.png": "Oats - Coldcut",
+      "line_05.png": "Tortilla",
+      "line_06.png": "Cheese",
+      "line_07.png": "cheese sticks",
+      "line_08.png": "French fries",
+      "line_09.png": "apple sauce",
+      "line_10.png": "potato",
+      "line_11.png": "Strawberry",
+      "line_12.png": "Trail Mix",
+      "line_13.png": "OAT MILK",
+      "line_14.png": "PROTEIN BARS",
+      "line_15.png": "milk",
+      "line_16.png": "cereal",
+      "line_17.png": "ice cream",
+      "line_18.png": "vanilla",
+      "line_19.png": "mint",
+      "line_20.png": "cookie Dough"
+    }
+  },
+
+  "videotest3": {
+    "source_image": "videotest3_frame.png",
+    "crops_dir": "finetune/crops/videotest3",
+    "labels": {
+      "line_00.png": "Cheese",
+      "line_01.png": "Black beans",
+      "line_02.png": "Broccoli Cookies",
+      "line_03.png": "Chia Seeds Ramen Noodles",
+      "line_04.png": "Green beans Peas",
+      "line_05.png": "Carrots",
+      "line_06.png": "Frozen Pizza Soda",
+      "line_07.png": "Tortillas Nestle Strawberry",
+      "line_08.png": "Doritos Coffee",
+      "line_09.png": "Apple Sauce Pretzels",
+      "line_10.png": "Milk Cat Food",
+      "line_11.png": "Ground Beef Chai tea",
+      "line_12.png": "Chicken Breast Paprika",
+      "line_13.png": "Salt Paper Plates",
+      "line_14.png": "Candles",
+      "line_15.png": "Cake mix"
+    }
+  }
+}
