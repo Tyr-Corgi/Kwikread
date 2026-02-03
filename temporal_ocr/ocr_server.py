@@ -40,11 +40,81 @@ PORT = 8765
 SOCKET_PATH = '/tmp/ocr_server.sock'
 OLLAMA_URL = 'http://localhost:11434/api/generate'
 
+# Security: Allowed directories for file access (prevents path traversal attacks)
+# Add more directories as needed, or set to None to allow all (not recommended)
+ALLOWED_DIRECTORIES = [
+    Path(__file__).parent.resolve(),  # temporal_ocr directory
+    Path(__file__).parent.parent.resolve(),  # kwikread directory
+    Path("/tmp"),  # Temp files
+]
+ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp'}
+
 # Model paths - fine-tuned model preferred if available (v3 trained on IAM + grocery + videotest3)
 FINETUNED_MODEL_PATH = Path(__file__).parent / "finetune" / "model_v3" / "final"
 FINETUNED_MODEL_V2_PATH = Path(__file__).parent / "finetune" / "model_v2" / "final"
 FINETUNED_MODEL_V1_PATH = Path(__file__).parent / "finetune" / "model" / "final"
 BASE_MODEL_NAME = 'microsoft/trocr-base-handwritten'
+
+
+class PathSecurityError(Exception):
+    """Raised when a file path fails security validation."""
+    pass
+
+
+def validate_image_path(image_path: str) -> Path:
+    """
+    Validate that an image path is safe to access.
+
+    Security checks:
+    1. Path must resolve to an absolute path (no ../ traversal)
+    2. Path must be within allowed directories
+    3. File extension must be an allowed image type
+    4. Path must not contain null bytes or other injection attempts
+
+    Args:
+        image_path: The path to validate
+
+    Returns:
+        Resolved absolute Path object
+
+    Raises:
+        PathSecurityError: If validation fails
+    """
+    # Check for null bytes (injection attempt)
+    if '\x00' in image_path:
+        raise PathSecurityError("Invalid path: contains null bytes")
+
+    # Convert to Path and resolve to absolute (eliminates ../)
+    try:
+        path = Path(image_path).resolve()
+    except (OSError, ValueError) as e:
+        raise PathSecurityError(f"Invalid path format: {e}")
+
+    # Check file extension
+    if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+        raise PathSecurityError(
+            f"Invalid file type: {path.suffix}. "
+            f"Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    # Check if path is within allowed directories
+    if ALLOWED_DIRECTORIES is not None:
+        path_allowed = False
+        for allowed_dir in ALLOWED_DIRECTORIES:
+            try:
+                path.relative_to(allowed_dir)
+                path_allowed = True
+                break
+            except ValueError:
+                continue
+
+        if not path_allowed:
+            raise PathSecurityError(
+                f"Access denied: path outside allowed directories. "
+                f"Path: {path}"
+            )
+
+    return path
 
 
 def preprocess_crop(crop_img: np.ndarray, style: str = 'auto') -> Image.Image:
@@ -896,8 +966,10 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
 
                 # Process
                 if request.get('action') == 'ocr':
+                    # Validate path before processing (security check)
+                    validated_path = validate_image_path(request['image_path'])
                     result = self.process_image(
-                        request['image_path'],
+                        str(validated_path),
                         verify=request.get('verify', False),
                         max_verify=request.get('max_verify', 2)
                     )
@@ -913,6 +985,10 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
             except json.JSONDecodeError as e:
                 print(f"[Server] Invalid JSON request: {e}")
                 error = json.dumps({"error": f"Invalid JSON: {e}"}).encode()
+                conn.sendall(struct.pack('>I', len(error)) + error)
+            except PathSecurityError as e:
+                print(f"[Server] Security violation: {e}")
+                error = json.dumps({"error": f"Security error: {e}"}).encode()
                 conn.sendall(struct.pack('>I', len(error)) + error)
             except (KeyError, TypeError) as e:
                 print(f"[Server] Invalid request format: {e}")
