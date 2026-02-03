@@ -240,7 +240,9 @@ def deskew_crop(image: np.ndarray, max_angle: float = 10.0) -> np.ndarray:
 
         return rotated
 
-    except Exception:
+    except (cv2.error, ValueError, TypeError) as e:
+        # Return original image if deskew fails (e.g., invalid contours)
+        print(f"[Deskew] Could not deskew image: {e}")
         return image
 
 
@@ -338,7 +340,8 @@ class OCRServer:
             from strikethrough_filter import StrikethroughDetector, filter_strikethrough_text
             self.strike_detector = StrikethroughDetector()
             self.filter_strike = filter_strikethrough_text
-        except:
+        except (ImportError, ModuleNotFoundError) as e:
+            print(f"[Server] Strikethrough filter not available: {e}")
             self.strike_detector = None
             self.filter_strike = None
 
@@ -450,8 +453,12 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 if result.lower().startswith('the text'):
                     result = result.split(':')[-1].strip().strip('"\'')
                 return result if result else trocr_text
-        except Exception as e:
-            print(f"[Vision] Error: {e}")
+        except requests.RequestException as e:
+            # Network errors: connection refused, timeout, DNS failure, etc.
+            print(f"[Vision] Network error: {e}")
+        except (KeyError, json.JSONDecodeError) as e:
+            # Response parsing errors
+            print(f"[Vision] Response parse error: {e}")
 
         return trocr_text
 
@@ -807,7 +814,23 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 response = json.dumps(result).encode()
                 conn.sendall(struct.pack('>I', len(response)) + response)
 
+            except json.JSONDecodeError as e:
+                print(f"[Server] Invalid JSON request: {e}")
+                error = json.dumps({"error": f"Invalid JSON: {e}"}).encode()
+                conn.sendall(struct.pack('>I', len(error)) + error)
+            except (KeyError, TypeError) as e:
+                print(f"[Server] Invalid request format: {e}")
+                error = json.dumps({"error": f"Invalid request: {e}"}).encode()
+                conn.sendall(struct.pack('>I', len(error)) + error)
+            except FileNotFoundError as e:
+                print(f"[Server] File not found: {e}")
+                error = json.dumps({"error": f"File not found: {e}"}).encode()
+                conn.sendall(struct.pack('>I', len(error)) + error)
             except Exception as e:
+                # Catch-all for unexpected errors - log full traceback
+                import traceback
+                print(f"[Server] Unexpected error: {e}")
+                traceback.print_exc()
                 error = json.dumps({"error": str(e)}).encode()
                 conn.sendall(struct.pack('>I', len(error)) + error)
             finally:
