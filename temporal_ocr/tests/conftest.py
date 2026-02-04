@@ -211,7 +211,7 @@ def model_bundle() -> Optional[ModelBundle]:
     try:
         processor = TrOCRProcessor.from_pretrained(model_path)
         model = VisionEncoderDecoderModel.from_pretrained(model_path)
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         pytest.skip(f"Could not load model from {model_path}: {e}")
         return None
 
@@ -360,3 +360,28 @@ def pytest_report_header(config):
         f"Videotest2 Crops: {VIDEOTEST2_CROPS_DIR.exists()}",
         f"Videotest3 Crops: {VIDEOTEST3_CROPS_DIR.exists()}",
     ]
+
+
+# =============================================================================
+# Shared Image Loading Fixture
+# =============================================================================
+
+@pytest.fixture(scope="session")
+def load_crop_image():
+    """
+    Provide a function to load crop images as PIL Images.
+
+    Returns:
+        Function that takes a Path and returns a PIL Image.
+    """
+    from PIL import Image
+    import cv2
+
+    def _load_crop_image(path: Path) -> Image.Image:
+        """Load a crop image and convert to PIL Image."""
+        img = cv2.imread(str(path))
+        if img is None:
+            raise ValueError(f"Could not load image: {path}")
+        return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    return _load_crop_image

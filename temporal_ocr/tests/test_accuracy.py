@@ -16,17 +16,12 @@ Usage:
     pytest tests/test_accuracy.py::TestVideotest3Accuracy -v
 """
 
-import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 from difflib import SequenceMatcher
 import pytest
 
-# Add parent for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from PIL import Image
-import cv2
 import numpy as np
 
 
@@ -68,14 +63,6 @@ def fuzzy_match(predicted: str, expected: str) -> float:
 
     # SequenceMatcher for fuzzy comparison
     return SequenceMatcher(None, p, e).ratio()
-
-
-def load_crop_image(path: Path) -> Image.Image:
-    """Load a crop image and convert to PIL Image."""
-    img = cv2.imread(str(path))
-    if img is None:
-        raise ValueError(f"Could not load image: {path}")
-    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
 
 def calculate_accuracy_metrics(
@@ -146,7 +133,7 @@ class TestVideotest2Accuracy:
     """Test OCR accuracy on videotest2 dataset (21 grocery items)."""
 
     @pytest.mark.requires_model
-    def test_batch_recognition(self, model_bundle, videotest2_crop_paths, videotest2_labels):
+    def test_batch_recognition(self, model_bundle, videotest2_crop_paths, videotest2_labels, load_crop_image):
         """
         Test batch recognition on all videotest2 crops.
 
@@ -195,7 +182,7 @@ class TestVideotest2Accuracy:
         )
 
     @pytest.mark.requires_model
-    def test_individual_items(self, model_bundle, videotest2_crop_paths, videotest2_labels):
+    def test_individual_items(self, model_bundle, videotest2_crop_paths, videotest2_labels, load_crop_image):
         """Test recognition of individual critical items."""
         if model_bundle is None:
             pytest.skip("Model not available")
@@ -232,7 +219,7 @@ class TestVideotest3Accuracy:
     """Test OCR accuracy on videotest3 dataset (16 grocery items)."""
 
     @pytest.mark.requires_model
-    def test_batch_recognition(self, model_bundle, videotest3_crop_paths, videotest3_labels):
+    def test_batch_recognition(self, model_bundle, videotest3_crop_paths, videotest3_labels, load_crop_image):
         """
         Test batch recognition on all videotest3 crops.
 
@@ -280,7 +267,7 @@ class TestVideotest3Accuracy:
         )
 
     @pytest.mark.requires_model
-    def test_challenging_items(self, model_bundle, videotest3_crop_paths, videotest3_labels):
+    def test_challenging_items(self, model_bundle, videotest3_crop_paths, videotest3_labels, load_crop_image):
         """Test recognition of challenging handwritten items."""
         if model_bundle is None:
             pytest.skip("Model not available")
@@ -321,7 +308,7 @@ class TestAccuracyRegression:
     VIDEOTEST3_BASELINE = 0.70  # 70% accuracy
 
     @pytest.mark.requires_model
-    def test_videotest2_no_regression(self, model_bundle, videotest2_crop_paths, videotest2_labels):
+    def test_videotest2_no_regression(self, model_bundle, videotest2_crop_paths, videotest2_labels, load_crop_image):
         """Ensure videotest2 accuracy doesn't drop below baseline."""
         if model_bundle is None:
             pytest.skip("Model not available")
@@ -347,7 +334,7 @@ class TestAccuracyRegression:
         )
 
     @pytest.mark.requires_model
-    def test_videotest3_no_regression(self, model_bundle, videotest3_crop_paths, videotest3_labels):
+    def test_videotest3_no_regression(self, model_bundle, videotest3_crop_paths, videotest3_labels, load_crop_image):
         """Ensure videotest3 accuracy doesn't drop below baseline."""
         if model_bundle is None:
             pytest.skip("Model not available")
@@ -428,7 +415,7 @@ class TestAccuracyWithCorrector:
     @pytest.mark.requires_model
     def test_corrector_improves_accuracy(
         self, model_bundle, grocery_corrector,
-        videotest3_crop_paths, videotest3_labels
+        videotest3_crop_paths, videotest3_labels, load_crop_image
     ):
         """
         Test that grocery_corrector improves raw OCR accuracy.

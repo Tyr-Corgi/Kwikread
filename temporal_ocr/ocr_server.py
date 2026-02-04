@@ -42,6 +42,15 @@ PORT = 8765
 SOCKET_PATH = '/tmp/ocr_server.sock'
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434/api/generate')
 
+# Security: Input validation limits
+MAX_PATH_LENGTH = 10 * 1024  # 10KB max for paths
+MAX_REQUEST_SIZE = 64 * 1024  # 64KB max for entire request
+MAX_ACTION_LENGTH = 32  # Max length for action field
+
+# Security: Rate limiting (token bucket)
+RATE_LIMIT_REQUESTS = 100  # Max requests per window
+RATE_LIMIT_WINDOW = 60  # Window size in seconds
+
 # =============================================================================
 # Line Detection Constants
 # =============================================================================
@@ -77,6 +86,123 @@ BASE_MODEL_NAME = 'microsoft/trocr-base-handwritten'
 class PathSecurityError(Exception):
     """Raised when a file path fails security validation."""
     pass
+
+
+class RateLimitError(Exception):
+    """Raised when rate limit is exceeded."""
+    pass
+
+
+class InputValidationError(Exception):
+    """Raised when input validation fails."""
+    pass
+
+
+class RateLimiter:
+    """Simple sliding window rate limiter for DoS protection.
+
+    Uses a per-client token bucket approach with automatic cleanup
+    of stale entries to prevent memory exhaustion.
+    """
+
+    def __init__(self, max_requests: int = RATE_LIMIT_REQUESTS, window_seconds: int = RATE_LIMIT_WINDOW):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests = {}  # client_id -> list of timestamps
+        self._lock = threading.Lock()
+
+    def _cleanup_old_entries(self, now: float):
+        """Remove entries older than the window. Called with lock held."""
+        cutoff = now - self.window_seconds
+        stale_clients = []
+        for client_id, timestamps in self._requests.items():
+            # Filter out old timestamps
+            self._requests[client_id] = [t for t in timestamps if t > cutoff]
+            if not self._requests[client_id]:
+                stale_clients.append(client_id)
+        # Remove clients with no recent requests
+        for client_id in stale_clients:
+            del self._requests[client_id]
+
+    def check_rate_limit(self, client_id: str = "default") -> bool:
+        """Check if request is allowed under rate limit.
+
+        Args:
+            client_id: Identifier for the client (default for Unix sockets)
+
+        Returns:
+            True if request is allowed
+
+        Raises:
+            RateLimitError: If rate limit is exceeded
+        """
+        now = time.time()
+
+        with self._lock:
+            # Periodic cleanup (every 10 requests)
+            if sum(len(v) for v in self._requests.values()) % 10 == 0:
+                self._cleanup_old_entries(now)
+
+            cutoff = now - self.window_seconds
+
+            if client_id not in self._requests:
+                self._requests[client_id] = []
+
+            # Filter timestamps within window
+            recent = [t for t in self._requests[client_id] if t > cutoff]
+
+            if len(recent) >= self.max_requests:
+                raise RateLimitError(
+                    f"Rate limit exceeded: {self.max_requests} requests per {self.window_seconds}s"
+                )
+
+            # Record this request
+            recent.append(now)
+            self._requests[client_id] = recent
+
+        return True
+
+
+def validate_request_input(request: dict, data_length: int) -> None:
+    """Validate request input for security.
+
+    Args:
+        request: Parsed JSON request dict
+        data_length: Length of raw request data in bytes
+
+    Raises:
+        InputValidationError: If validation fails
+    """
+    # Check overall request size
+    if data_length > MAX_REQUEST_SIZE:
+        raise InputValidationError(
+            f"Request too large: {data_length} bytes (max: {MAX_REQUEST_SIZE})"
+        )
+
+    # Validate action field
+    action = request.get('action', '')
+    if not isinstance(action, str):
+        raise InputValidationError("Action must be a string")
+    if len(action) > MAX_ACTION_LENGTH:
+        raise InputValidationError(
+            f"Action too long: {len(action)} chars (max: {MAX_ACTION_LENGTH})"
+        )
+
+    # Validate image_path if present
+    image_path = request.get('image_path', '')
+    if image_path:
+        if not isinstance(image_path, str):
+            raise InputValidationError("image_path must be a string")
+        if len(image_path) > MAX_PATH_LENGTH:
+            raise InputValidationError(
+                f"Path too long: {len(image_path)} chars (max: {MAX_PATH_LENGTH})"
+            )
+
+    # Validate numeric fields
+    max_verify = request.get('max_verify')
+    if max_verify is not None:
+        if not isinstance(max_verify, (int, float)) or max_verify < 0 or max_verify > 100:
+            raise InputValidationError("max_verify must be a number between 0 and 100")
 
 
 def validate_image_path(image_path: str) -> Path:
@@ -994,7 +1120,14 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
         }
 
     def serve_socket(self):
-        """Run as Unix socket server for fastest IPC."""
+        """Run as Unix socket server for fastest IPC.
+
+        Security features:
+        - Unix socket (AF_UNIX) ensures localhost-only access
+        - Rate limiting prevents DoS attacks (100 req/min default)
+        - Input validation prevents oversized/malformed requests
+        - Path validation prevents directory traversal
+        """
         import os
 
         # Remove old socket
@@ -1003,21 +1136,34 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
 
         self.load_models()
 
+        # Initialize rate limiter
+        rate_limiter = RateLimiter()
+
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(SOCKET_PATH)
         server.listen(5)
 
         print(f"[Server] Listening on {SOCKET_PATH}")
+        print(f"[Server] Rate limit: {RATE_LIMIT_REQUESTS} requests per {RATE_LIMIT_WINDOW}s")
         print("[Server] Ready for requests!")
 
         while True:
             conn, _ = server.accept()
             try:
+                # Check rate limit before processing
+                rate_limiter.check_rate_limit()
+
                 # Read message length
                 raw_len = conn.recv(4)
                 if not raw_len:
                     continue
                 msg_len = struct.unpack('>I', raw_len)[0]
+
+                # Security: Reject oversized messages early
+                if msg_len > MAX_REQUEST_SIZE:
+                    raise InputValidationError(
+                        f"Message too large: {msg_len} bytes (max: {MAX_REQUEST_SIZE})"
+                    )
 
                 # Read message
                 data = b''
@@ -1028,6 +1174,9 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                     data += chunk
 
                 request = json.loads(data.decode())
+
+                # Validate all input fields
+                validate_request_input(request, len(data))
 
                 # Process
                 if request.get('action') == 'ocr':
@@ -1047,6 +1196,14 @@ Reply with ONLY the corrected text, nothing else. If correct, reply with the sam
                 response = json.dumps(result).encode()
                 conn.sendall(struct.pack('>I', len(response)) + response)
 
+            except RateLimitError as e:
+                print(f"[Server] Rate limit exceeded: {e}")
+                error = json.dumps({"error": f"Rate limit exceeded: {e}"}).encode()
+                conn.sendall(struct.pack('>I', len(error)) + error)
+            except InputValidationError as e:
+                print(f"[Server] Input validation failed: {e}")
+                error = json.dumps({"error": f"Validation error: {e}"}).encode()
+                conn.sendall(struct.pack('>I', len(error)) + error)
             except json.JSONDecodeError as e:
                 print(f"[Server] Invalid JSON request: {e}")
                 error = json.dumps({"error": f"Invalid JSON: {e}"}).encode()

@@ -14,17 +14,12 @@ Usage:
     pytest tests/test_performance.py::TestInferenceSpeed -v
 """
 
-import sys
 import time
 from pathlib import Path
 from typing import List
 import pytest
 
-# Add parent for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from PIL import Image
-import cv2
 
 
 # =============================================================================
@@ -45,14 +40,6 @@ MIN_THROUGHPUT_IMAGES_PER_SEC = 2.5  # images per second
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-def load_crop_image(path: Path) -> Image.Image:
-    """Load a crop image and convert to PIL Image."""
-    img = cv2.imread(str(path))
-    if img is None:
-        raise ValueError(f"Could not load image: {path}")
-    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-
 
 def measure_inference_time(model_bundle, images: List[Image.Image], warmup: bool = True) -> float:
     """
@@ -86,7 +73,7 @@ class TestInferenceSpeed:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_videotest3_under_6_seconds(self, model_bundle, videotest3_crop_paths):
+    def test_videotest3_under_6_seconds(self, model_bundle, videotest3_crop_paths, load_crop_image):
         """
         Test that processing 16 videotest3 images takes <6 seconds.
 
@@ -118,7 +105,7 @@ class TestInferenceSpeed:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_videotest2_performance(self, model_bundle, videotest2_crop_paths):
+    def test_videotest2_performance(self, model_bundle, videotest2_crop_paths, load_crop_image):
         """
         Test videotest2 (21 images) performance.
 
@@ -147,7 +134,7 @@ class TestInferenceSpeed:
         )
 
     @pytest.mark.requires_model
-    def test_single_image_latency(self, model_bundle, videotest3_crop_paths):
+    def test_single_image_latency(self, model_bundle, videotest3_crop_paths, load_crop_image):
         """Test single image inference latency."""
         if model_bundle is None:
             pytest.skip("Model not available")
@@ -181,7 +168,7 @@ class TestThroughput:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_minimum_throughput(self, model_bundle, videotest3_crop_paths):
+    def test_minimum_throughput(self, model_bundle, videotest3_crop_paths, load_crop_image):
         """Test minimum throughput of 2.5 images/second."""
         if model_bundle is None:
             pytest.skip("Model not available")
@@ -200,7 +187,7 @@ class TestThroughput:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_batch_vs_sequential(self, model_bundle, videotest3_crop_paths):
+    def test_batch_vs_sequential(self, model_bundle, videotest3_crop_paths, load_crop_image):
         """
         Compare batch vs sequential processing.
 
@@ -250,7 +237,7 @@ class TestPerformanceRegression:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_no_performance_regression(self, model_bundle, videotest3_crop_paths):
+    def test_no_performance_regression(self, model_bundle, videotest3_crop_paths, load_crop_image):
         """
         Ensure performance hasn't regressed from baseline.
 
@@ -321,7 +308,7 @@ class TestMemoryUsage:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_no_memory_leak(self, model_bundle, videotest3_crop_paths):
+    def test_no_memory_leak(self, model_bundle, videotest3_crop_paths, load_crop_image):
         """
         Test that repeated inference doesn't leak memory.
 
@@ -372,7 +359,7 @@ class TestBenchmarks:
 
     @pytest.mark.slow
     @pytest.mark.requires_model
-    def test_full_benchmark(self, model_bundle, videotest3_crop_paths, videotest2_crop_paths):
+    def test_full_benchmark(self, model_bundle, videotest3_crop_paths, videotest2_crop_paths, load_crop_image):
         """
         Run comprehensive benchmark on all test images.
 
