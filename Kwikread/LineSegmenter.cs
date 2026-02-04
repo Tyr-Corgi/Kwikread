@@ -10,9 +10,9 @@ namespace Kwikread;
 /// </summary>
 public class LineSegmenter
 {
-    private const int AbsoluteMinLineHeight = 15;  // Absolute minimum (tiny text)
+    private const int AbsoluteMinLineHeight = 60;  // Minimum line height for OCR to work well
     private const int AbsoluteMaxLineHeight = 500; // Absolute maximum (huge text)
-    private const int ProjectionSmoothWindow = 3;  // Smaller window for finer detection
+    private const int ProjectionSmoothWindow = 5;  // Smooth window for noise reduction
 
     /// <summary>
     /// Segments an image into individual text lines.
@@ -187,7 +187,7 @@ public class LineSegmenter
 
         // Keep well-spaced gaps
         var gaps = new List<int>();
-        int minGapDistance = Math.Max(15, height / 100); // At least 15px or 1% of height
+        int minGapDistance = Math.Max(60, height / 30); // At least 60px or 3.3% of height - ensures meaningful line spacing
 
         foreach (var (y, value, prominence) in significantCandidates)
         {

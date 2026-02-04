@@ -12,6 +12,7 @@ public class CorrectionTracker
     private readonly string _dataPath;
     private CorrectionData _data;
     private readonly object _lock = new();
+    private bool _loadFailed = false;
 
     public CorrectionTracker(string dataDirectory)
     {
@@ -128,6 +129,7 @@ public class CorrectionTracker
         catch (Exception ex)
         {
             Console.WriteLine($"Warning: Failed to load correction data: {ex.Message}");
+            _loadFailed = true;
             return new CorrectionData();
         }
     }
@@ -137,6 +139,14 @@ public class CorrectionTracker
         var directory = Path.GetDirectoryName(_dataPath);
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
+
+        // Create backup if original load failed to prevent data loss
+        if (_loadFailed && File.Exists(_dataPath))
+        {
+            var backupPath = _dataPath + ".backup." + DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+            File.Copy(_dataPath, backupPath);
+            Console.WriteLine($"Warning: Created backup at {backupPath} before overwriting potentially corrupted file");
+        }
 
         var json = JsonSerializer.Serialize(_data, new JsonSerializerOptions { WriteIndented = true });
 

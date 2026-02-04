@@ -357,8 +357,12 @@ class LineCropOCRPipeline:
         crop_dir = out_path / "crops" / image_name
         crop_dir.mkdir(parents=True, exist_ok=True)
 
-        # Process each line
-        line_results = []
+        # Collect all line crops and metadata
+        line_crops = []
+        line_bboxes = []
+        line_words = []
+        crop_paths = []
+
         for line_idx, (line_bbox, words) in enumerate(lines):
             # Crop
             line_crop = self.line_detector.crop_line(image, line_bbox)
@@ -367,12 +371,46 @@ class LineCropOCRPipeline:
             crop_path = crop_dir / f"line_{line_idx:02d}.png"
             cv2.imwrite(str(crop_path), line_crop)
 
-            # Get text from TrOCR
+            line_crops.append(line_crop)
+            line_bboxes.append(line_bbox)
+            line_words.append(words)
+            crop_paths.append(str(crop_path))
+
+        # Batch OCR recognition - process all lines in one forward pass
+        # Only use batch inference for lines that need OCR (no pre-detected words)
+        lines_needing_ocr = []
+        lines_needing_ocr_indices = []
+        ocr_results = {}
+
+        for idx, (words, line_crop) in enumerate(zip(line_words, line_crops)):
             if words:
+                # Already have detected text from detector
                 line_text = " ".join(w[1] for w in words)
                 line_conf = np.mean([w[2] for w in words])
+                ocr_results[idx] = (line_text, line_conf)
             else:
-                line_text, line_conf = self.ocr_engine.recognize_line(line_crop)
+                # Need to run OCR
+                lines_needing_ocr.append(line_crop)
+                lines_needing_ocr_indices.append(idx)
+
+        # Run batch inference for lines needing OCR
+        if lines_needing_ocr:
+            # Check if engine supports batch inference
+            if hasattr(self.ocr_engine, 'recognize_batch'):
+                batch_results = self.ocr_engine.recognize_batch(lines_needing_ocr)
+            else:
+                # Fallback to sequential processing
+                batch_results = [self.ocr_engine.recognize_line(crop) for crop in lines_needing_ocr]
+
+            for idx, result in zip(lines_needing_ocr_indices, batch_results):
+                ocr_results[idx] = result
+
+        # Process results with vision verification and strikethrough filtering
+        line_results = []
+        for line_idx in range(len(lines)):
+            line_bbox = line_bboxes[line_idx]
+            line_crop = line_crops[line_idx]
+            line_text, line_conf = ocr_results[line_idx]
 
             # Vision verification: use local LLM to verify/correct TrOCR output
             vision_text = None
@@ -401,7 +439,7 @@ class LineCropOCRPipeline:
                 "bbox": [line_bbox.x, line_bbox.y, line_bbox.width, line_bbox.height],
                 "text": line_text.strip(),
                 "confidence": line_conf,
-                "crop_path": str(crop_path)
+                "crop_path": crop_paths[line_idx]
             })
 
         # Build full text

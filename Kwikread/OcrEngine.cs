@@ -96,7 +96,10 @@ public class OcrEngine : IDisposable
                 if (genConfig.TryGetProperty("pad_token_id", out var padId))
                     _padTokenId = padId.GetInt32();
             }
-            catch { /* Use defaults */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Failed to parse generation config '{genConfigPath}': {ex.Message}. Using defaults.");
+            }
         }
 
         // Load model architecture config
@@ -124,25 +127,42 @@ public class OcrEngine : IDisposable
                         _decoderHeadDim = dModel.GetInt32() / _numDecoderHeads;
                 }
 
-                // Fallback special tokens from main config
-                if (_decoderStartTokenId == 2 && config.TryGetProperty("decoder_start_token_id", out var dst))
+                // Use root-level decoder_start_token_id (0 for this model)
+                // Note: this differs from decoder section (2) but matches what Xenova expects
+                if (config.TryGetProperty("decoder_start_token_id", out var dst))
                     _decoderStartTokenId = dst.GetInt32();
                 if (config.TryGetProperty("eos_token_id", out var eos))
                     _eosTokenId = eos.GetInt32();
                 if (config.TryGetProperty("pad_token_id", out var pad))
                     _padTokenId = pad.GetInt32();
             }
-            catch { /* Use defaults */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Failed to parse model config '{configPath}': {ex.Message}. Using defaults.");
+            }
         }
     }
 
     /// <summary>
     /// Recognize text from an image file.
+    /// Automatically detects orientation and corrects rotated images.
     /// Automatically detects if image contains multiple lines and segments them.
     /// </summary>
     public string RecognizeFromFile(string imagePath)
     {
         using var image = Image.Load<Rgb24>(imagePath);
+
+        // Detect and correct image orientation
+        Console.WriteLine("Detecting image orientation...");
+        var orientationResult = OrientationDetector.DetectOrientation(image);
+
+        if (orientationResult.NeedsRotation)
+        {
+            Console.WriteLine($"Image orientation: {orientationResult.Orientation}");
+            using var correctedImage = OrientationDetector.CorrectOrientation(image, orientationResult);
+            return RecognizeMultiLine(correctedImage);
+        }
+
         return RecognizeMultiLine(image);
     }
 
@@ -166,7 +186,7 @@ public class OcrEngine : IDisposable
         Console.WriteLine("Processing as multi-line image...");
         Console.WriteLine("Segmenting lines...");
         
-        var preprocessed = LineSegmenter.PreprocessImage(image);
+        using var preprocessed = LineSegmenter.PreprocessImage(image);
         var lines = LineSegmenter.SegmentLines(preprocessed);
         
         if (lines.Count == 0)
@@ -286,8 +306,8 @@ public class OcrEngine : IDisposable
             .Contrast(1.3f)      // Increase contrast
             .Brightness(1.05f)); // Slight brightness boost
 
-        // Squish resize to 384x384 (no aspect ratio preservation)
-        // This matches the HuggingFace ViTImageProcessor behavior
+        // Squish resize to 384x384 (matches HuggingFace ViTImageProcessor behavior)
+        // TrOCR was trained with squished images, so we must match that
         using var resizedImage = enhanced.Clone(x => x.Resize(ImageSize, ImageSize));
 
         // Convert to float tensor with normalization
@@ -665,7 +685,7 @@ public class OcrEngine : IDisposable
             // Parse vocab.json - it's typically a dict of token -> id
             // For simplicity, we'll need to invert it
             var vocab = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(json);
-            if (vocab == null) return Array.Empty<string>();
+            if (vocab == null || vocab.Count == 0) return Array.Empty<string>();
 
             var result = new string[vocab.Values.Max() + 1];
             foreach (var kvp in vocab)

@@ -128,7 +128,9 @@ class OCREngine:
             # Use MPS on Mac if available, else CPU
             if torch.backends.mps.is_available():
                 self.device = torch.device("mps")
-                print("[OCR] Using MPS (Metal) acceleration")
+                # Use FP16 for faster inference on MPS
+                self.trocr_model = self.trocr_model.half()
+                print("[OCR] Using MPS (Metal) acceleration with FP16")
             else:
                 self.device = torch.device("cpu")
             self.trocr_model = self.trocr_model.to(self.device)
@@ -383,55 +385,30 @@ class OCREngine:
         """TrOCR line recognition."""
         try:
             import torch
-            from PIL import Image, ImageOps, ImageEnhance
+            from PIL import Image
 
-            # === GENTLE PREPROCESSING FOR HANDWRITING (preserve strokes) ===
-
-            # Step 1: Convert to PIL Image directly (keep color for now)
+            # Convert to PIL Image - minimal preprocessing for best accuracy
+            # The TrOCRProcessor handles resizing internally
             if len(line_image.shape) == 3:
-                pil_orig = Image.fromarray(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
+                pil_image = Image.fromarray(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
             else:
-                pil_orig = Image.fromarray(line_image).convert("RGB")
+                pil_image = Image.fromarray(line_image).convert("RGB")
 
-            # Step 2: Add padding
-            pad = 16
-            w, h = pil_orig.size
-            padded = Image.new("RGB", (w + 2*pad, h + 2*pad), (255, 255, 255))
-            padded.paste(pil_orig, (pad, pad))
-
-            # Step 3: Resize to reasonable height
-            w, h = padded.size
-            target_height = 96
-            scale = target_height / h
-            new_w = max(int(w * scale), 64)
-            resized = padded.resize((new_w, target_height), Image.LANCZOS)
-
-            # Step 4: Convert to grayscale and enhance contrast
-            gray_pil = resized.convert("L")
-
-            # Auto-contrast (stretches histogram)
-            gray_pil = ImageOps.autocontrast(gray_pil, cutoff=2)
-
-            # Convert back to RGB
-            pil_image = gray_pil.convert("RGB")
-
-            # Boost contrast
-            enhancer = ImageEnhance.Contrast(pil_image)
-            pil_image = enhancer.enhance(1.3)
-
-            # Process and generate with optimized parameters
+            # Process and generate
             pixel_values = self.trocr_processor(
                 pil_image, return_tensors="pt"
             ).pixel_values.to(self.device)
+
+            # Convert to FP16 if model is half precision
+            if self.trocr_model.dtype == torch.float16:
+                pixel_values = pixel_values.half()
 
             with torch.no_grad():
                 generated_ids = self.trocr_model.generate(
                     pixel_values,
                     max_length=64,
-                    num_beams=5,  # More beams for better decoding
-                    early_stopping=True,
-                    length_penalty=1.0,
-                    no_repeat_ngram_size=3,  # Prevent repetition
+                    num_beams=1,  # Greedy for speed
+                    do_sample=False,
                 )
 
             text = self.trocr_processor.batch_decode(
@@ -459,6 +436,127 @@ class OCREngine:
             traceback.print_exc()
 
         return "", 0.0
+
+    def recognize_batch(self, images: List[np.ndarray]) -> List[Tuple[str, float]]:
+        """
+        Recognize text in multiple cropped line images using batch inference.
+
+        Processes ALL images in ONE forward pass through the model for efficiency.
+
+        Args:
+            images: List of cropped line images (numpy arrays)
+
+        Returns:
+            List of (text, confidence) tuples, one per input image
+        """
+        if not images:
+            return []
+
+        # Filter out empty images and track indices
+        valid_images = []
+        valid_indices = []
+        for i, img in enumerate(images):
+            if img is not None and img.size > 0:
+                valid_images.append(img)
+                valid_indices.append(i)
+
+        if not valid_images:
+            return [("", 0.0)] * len(images)
+
+        # Route to appropriate engine
+        if self.engine_name == "trocr":
+            batch_results = self._recognize_batch_trocr(valid_images)
+        elif self.engine_name == "ensemble":
+            batch_results = self.ensemble_engine.recognize_batch(valid_images)
+        else:
+            # Fallback to sequential processing for non-TrOCR engines
+            batch_results = [self.recognize_line(img) for img in valid_images]
+
+        # Reconstruct full results list with empty results for invalid images
+        results = [("", 0.0)] * len(images)
+        for idx, result in zip(valid_indices, batch_results):
+            results[idx] = result
+
+        return results
+
+    def _recognize_batch_trocr(self, images: List[np.ndarray]) -> List[Tuple[str, float]]:
+        """
+        TrOCR batch recognition - processes all images in one forward pass.
+
+        Args:
+            images: List of valid (non-empty) cropped line images
+
+        Returns:
+            List of (text, confidence) tuples
+        """
+        try:
+            import torch
+            from PIL import Image, ImageOps, ImageEnhance
+
+            # Convert images to PIL format - minimal preprocessing for best accuracy
+            # The TrOCRProcessor handles resizing internally
+            pil_images = []
+            for line_image in images:
+                # Convert to PIL Image - keep original quality
+                if len(line_image.shape) == 3:
+                    pil_image = Image.fromarray(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
+                else:
+                    pil_image = Image.fromarray(line_image).convert("RGB")
+
+                pil_images.append(pil_image)
+
+            # Process batch through processor (handles padding/resizing to same size)
+            pixel_values = self.trocr_processor(
+                images=pil_images,
+                return_tensors="pt",
+                padding=True
+            ).pixel_values.to(self.device)
+
+            # Convert to FP16 if model is half precision
+            if self.trocr_model.dtype == torch.float16:
+                pixel_values = pixel_values.half()
+
+            # Generate for entire batch
+            # num_beams=1 (greedy) for maximum speed - accuracy maintained with minimal preprocessing
+            with torch.no_grad():
+                generated_ids = self.trocr_model.generate(
+                    pixel_values,
+                    max_length=32,
+                    num_beams=1,    # Greedy decoding for speed
+                    do_sample=False,
+                )
+
+            # Decode all at once
+            texts = self.trocr_processor.batch_decode(
+                generated_ids, skip_special_tokens=True
+            )
+
+            # Post-process each result
+            results = []
+            for text in texts:
+                text = text.strip()
+
+                # Clean up TrOCR word output
+                text = re.sub(r'\s*[.,;:]\s*', ' ', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+
+                # Estimate confidence
+                conf = 0.9
+                if not text or len(text) < 2:
+                    conf = 0.1
+                elif any(x in text.lower() for x in ['%', 'na%', 'sc%', '###']):
+                    conf = 0.1  # Garbage output
+
+                results.append((text, conf))
+
+            return results
+
+        except Exception as e:
+            print(f"[OCR] TrOCR batch recognition error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to sequential processing
+            return [self._recognize_trocr(img) for img in images]
 
 
 class EnsembleOCREngine:
@@ -782,3 +880,134 @@ class EnsembleOCREngine:
             text = text[:len(reference)]
 
         return text
+
+    def recognize_batch(self, images: List[np.ndarray]) -> List[Tuple[str, float]]:
+        """
+        Recognize text in multiple images using batch ensemble inference.
+
+        Runs batch inference on each model, then combines results using voting.
+
+        Args:
+            images: List of cropped line images
+
+        Returns:
+            List of (text, confidence) tuples
+        """
+        if not images:
+            return []
+
+        import torch
+        from PIL import Image, ImageOps, ImageEnhance
+
+        # Preprocess all images
+        pil_images = []
+        for line_image in images:
+            if line_image is None or line_image.size == 0:
+                pil_images.append(None)
+                continue
+
+            # Convert to PIL
+            if len(line_image.shape) == 3:
+                pil_orig = Image.fromarray(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
+            else:
+                pil_orig = Image.fromarray(line_image).convert("RGB")
+
+            # Add padding
+            pad = 16
+            w, h = pil_orig.size
+            padded = Image.new("RGB", (w + 2*pad, h + 2*pad), (255, 255, 255))
+            padded.paste(pil_orig, (pad, pad))
+
+            # Resize
+            w, h = padded.size
+            target_height = 96
+            scale = target_height / h
+            new_w = max(int(w * scale), 64)
+            resized = padded.resize((new_w, target_height), Image.LANCZOS)
+
+            # Grayscale and enhance
+            gray_pil = resized.convert("L")
+            gray_pil = ImageOps.autocontrast(gray_pil, cutoff=2)
+            pil_image = gray_pil.convert("RGB")
+
+            enhancer = ImageEnhance.Contrast(pil_image)
+            pil_image = enhancer.enhance(1.3)
+
+            pil_images.append(pil_image)
+
+        # Track valid images
+        valid_indices = [i for i, img in enumerate(pil_images) if img is not None]
+        valid_pil_images = [pil_images[i] for i in valid_indices]
+
+        if not valid_pil_images:
+            return [("", 0.0)] * len(images)
+
+        # Run batch inference on each model
+        all_model_predictions = []  # List of (model_idx, List[texts])
+
+        for model_idx, (model, processor) in enumerate(zip(self.models, self.processors)):
+            try:
+                pixel_values = processor(
+                    images=valid_pil_images,
+                    return_tensors="pt",
+                    padding=True
+                ).pixel_values.to(self.device)
+
+                with torch.no_grad():
+                    generated_ids = model.generate(
+                        pixel_values,
+                        max_length=64,
+                        num_beams=5,
+                        early_stopping=True,
+                        length_penalty=1.0,
+                        no_repeat_ngram_size=3,
+                    )
+
+                texts = processor.batch_decode(generated_ids, skip_special_tokens=True)
+
+                # Clean up each text
+                cleaned_texts = []
+                for text in texts:
+                    text = text.strip()
+                    text = re.sub(r'\s*[.,;:]\s*', ' ', text)
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    cleaned_texts.append(text)
+
+                all_model_predictions.append((model_idx, cleaned_texts))
+
+            except Exception as e:
+                print(f"[Ensemble] Model {self.model_names[model_idx]} batch error: {e}")
+
+        if not all_model_predictions:
+            return [("", 0.0)] * len(images)
+
+        # Combine predictions for each image using ensemble voting
+        batch_results = []
+        for img_idx in range(len(valid_pil_images)):
+            # Gather predictions from all models for this image
+            predictions = []
+            for model_idx, texts in all_model_predictions:
+                text = texts[img_idx] if img_idx < len(texts) else ""
+
+                # Estimate confidence
+                conf = 0.9
+                if not text or len(text) < 2:
+                    conf = 0.1
+                elif any(x in text.lower() for x in ['%', 'na%', 'sc%', '###']):
+                    conf = 0.1
+
+                weight = self.weights[model_idx] if model_idx < len(self.weights) else 0.5
+                predictions.append((text, conf, weight, self.model_names[model_idx]))
+
+            if predictions:
+                ensemble_text, ensemble_conf = self._ensemble_vote(predictions)
+                batch_results.append((ensemble_text, ensemble_conf))
+            else:
+                batch_results.append(("", 0.0))
+
+        # Reconstruct full results list
+        results = [("", 0.0)] * len(images)
+        for idx, result in zip(valid_indices, batch_results):
+            results[idx] = result
+
+        return results
