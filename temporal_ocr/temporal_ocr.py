@@ -130,9 +130,16 @@ class TemporalResult:
 # =============================================================================
 
 class OCREngine:
-    """Wrapper for OCR engines (PaddleOCR, EasyOCR, Tesseract, TrOCR)."""
+    """Wrapper for OCR engines (PaddleOCR, EasyOCR, Tesseract, TrOCR, Ensemble)."""
 
-    def __init__(self, engine_name: str = "paddle", lang: str = "en", model_path: str = None):
+    def __init__(
+        self,
+        engine_name: str = "paddle",
+        lang: str = "en",
+        model_path: str = None,
+        ensemble_base_model: str = "microsoft/trocr-large-handwritten",
+        ensemble_weights: Tuple[float, float] = (0.6, 0.4)
+    ):
         self.engine_name = engine_name.lower()
         self.lang = lang
         self.engine = None
@@ -140,6 +147,9 @@ class OCREngine:
         self.trocr_model = None
         self.trocr_processor = None
         self.detector = None  # For TrOCR, we need a separate detector
+        self.ensemble_engine = None  # For ensemble mode
+        self.ensemble_base_model = ensemble_base_model
+        self.ensemble_weights = ensemble_weights
         self._initialize_engine()
 
     def _initialize_engine(self):
@@ -187,8 +197,22 @@ class OCREngine:
                 from transformers import VisionEncoderDecoderModel, TrOCRProcessor
                 from PIL import Image
 
-                # Try large model for better accuracy on challenging handwriting
-                model_path = self.model_path or "microsoft/trocr-large-handwritten"
+                # Use fine-tuned model if available, otherwise fall back to base model
+                if self.model_path:
+                    model_path = self.model_path
+                else:
+                    # Check for fine-tuned models in order of preference
+                    script_dir = Path(__file__).parent
+                    finetuned_paths = [
+                        script_dir / "finetune" / "model_v3" / "final",
+                        script_dir / "finetune" / "model_v2" / "final",
+                        script_dir / "finetune" / "model" / "final",
+                    ]
+                    model_path = "microsoft/trocr-large-handwritten"  # Default fallback
+                    for finetuned in finetuned_paths:
+                        if finetuned.exists():
+                            model_path = str(finetuned)
+                            break
 
                 print(f"[OCR] Loading TrOCR from: {model_path}")
                 self.trocr_processor = TrOCRProcessor.from_pretrained(model_path)
@@ -228,6 +252,21 @@ class OCREngine:
             except ImportError as e:
                 print(f"[OCR] Claude SDK not available ({e}), falling back to EasyOCR")
                 self.engine_name = "easyocr"
+                self._initialize_engine()
+
+        elif self.engine_name == "ensemble":
+            try:
+                self.ensemble_engine = EnsembleOCREngine(
+                    finetuned_path=self.model_path,
+                    base_model=self.ensemble_base_model,
+                    lang=self.lang,
+                    weights=self.ensemble_weights
+                )
+                print(f"[OCR] Initialized Ensemble OCR with {len(self.ensemble_engine.models)} models")
+
+            except Exception as e:
+                print(f"[OCR] Ensemble initialization failed ({e}), falling back to TrOCR")
+                self.engine_name = "trocr"
                 self._initialize_engine()
 
     def detect_and_recognize(self, image: np.ndarray) -> List[Tuple[List[List[int]], str, float]]:
@@ -419,6 +458,10 @@ class OCREngine:
             except Exception as e:
                 print(f"[OCR] Claude detection error: {e}")
 
+        elif self.engine_name == "ensemble":
+            # Delegate to ensemble engine
+            return self.ensemble_engine.detect_and_recognize(image)
+
         return results
 
     def recognize_line(self, line_image: np.ndarray) -> Tuple[str, float]:
@@ -544,7 +587,408 @@ class OCREngine:
                 import traceback
                 traceback.print_exc()
 
+        elif self.engine_name == "ensemble":
+            # Delegate to ensemble engine
+            return self.ensemble_engine.recognize_line(line_image)
+
         return "", 0.0
+
+
+# =============================================================================
+# Ensemble OCR Engine
+# =============================================================================
+
+class EnsembleOCREngine:
+    """
+    Ensemble OCR engine that combines predictions from multiple TrOCR models
+    using character-level voting (similar to temporal consensus).
+
+    Runs:
+    1. Fine-tuned model (finetune/model_v3/final)
+    2. Base model (trocr-large-handwritten or trocr-base-handwritten)
+
+    Uses weighted character-level voting to combine results.
+    """
+
+    def __init__(
+        self,
+        finetuned_path: str = None,
+        base_model: str = "microsoft/trocr-large-handwritten",
+        lang: str = "en",
+        weights: Tuple[float, float] = (0.6, 0.4)  # (finetuned, base) weights
+    ):
+        self.lang = lang
+        self.weights = weights
+        self.models = []
+        self.processors = []
+        self.model_names = []
+        self.device = None
+        self.detector = None
+
+        self._initialize_ensemble(finetuned_path, base_model)
+
+    def _initialize_ensemble(self, finetuned_path: str, base_model: str):
+        """Initialize all models in the ensemble."""
+        import torch
+        from transformers import VisionEncoderDecoderModel, TrOCRProcessor
+
+        # Determine device
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print("[Ensemble] Using MPS (Metal) acceleration")
+        else:
+            self.device = torch.device("cpu")
+            print("[Ensemble] Using CPU")
+
+        # Load fine-tuned model
+        if finetuned_path is None:
+            script_dir = Path(__file__).parent
+            finetuned_paths = [
+                script_dir / "finetune" / "model_v3" / "final",
+                script_dir / "finetune" / "model_v2" / "final",
+                script_dir / "finetune" / "model" / "final",
+            ]
+            for fp in finetuned_paths:
+                if fp.exists():
+                    finetuned_path = str(fp)
+                    break
+
+        if finetuned_path and Path(finetuned_path).exists():
+            print(f"[Ensemble] Loading fine-tuned model: {finetuned_path}")
+            try:
+                processor = TrOCRProcessor.from_pretrained(finetuned_path)
+                model = VisionEncoderDecoderModel.from_pretrained(finetuned_path)
+                model.eval()
+                model = model.to(self.device)
+                self.models.append(model)
+                self.processors.append(processor)
+                self.model_names.append("finetuned")
+            except Exception as e:
+                print(f"[Ensemble] Failed to load fine-tuned model: {e}")
+        else:
+            print(f"[Ensemble] Fine-tuned model not found, skipping")
+
+        # Load base model
+        print(f"[Ensemble] Loading base model: {base_model}")
+        try:
+            processor = TrOCRProcessor.from_pretrained(base_model)
+            model = VisionEncoderDecoderModel.from_pretrained(base_model)
+            model.eval()
+            model = model.to(self.device)
+            self.models.append(model)
+            self.processors.append(processor)
+            self.model_names.append("base")
+        except Exception as e:
+            print(f"[Ensemble] Failed to load base model: {e}")
+
+        if not self.models:
+            raise RuntimeError("No models loaded for ensemble")
+
+        print(f"[Ensemble] Loaded {len(self.models)} models: {self.model_names}")
+
+        # Initialize detector (EasyOCR for text detection)
+        try:
+            import easyocr
+            self.detector = easyocr.Reader([self.lang], gpu=False, verbose=False)
+            print("[Ensemble] Initialized EasyOCR detector")
+        except ImportError:
+            raise RuntimeError("EasyOCR required for ensemble detection")
+
+    def detect_and_recognize(self, image: np.ndarray) -> List[Tuple[List[List[int]], str, float]]:
+        """
+        Detect text regions and recognize using ensemble voting.
+
+        Returns:
+            List of (polygon_points, text, confidence)
+        """
+        if image is None or image.size == 0:
+            return []
+
+        results = []
+
+        try:
+            # Get detections from EasyOCR
+            detections = self.detector.readtext(
+                image,
+                paragraph=False,
+                width_ths=0.3,
+                height_ths=0.5
+            )
+
+            # Split wide detections (same logic as TrOCR engine)
+            final_detections = self._split_wide_detections(image, detections)
+
+            # Process each detection with ensemble
+            for item in final_detections:
+                polygon = item[0]
+                x_coords = [p[0] for p in polygon]
+                y_coords = [p[1] for p in polygon]
+                x1, x2 = int(min(x_coords)), int(max(x_coords))
+                y1, y2 = int(min(y_coords)), int(max(y_coords))
+
+                # Pad slightly
+                pad = 5
+                x1, y1 = max(0, x1-pad), max(0, y1-pad)
+                x2, y2 = min(image.shape[1], x2+pad), min(image.shape[0], y2+pad)
+
+                crop = image[y1:y2, x1:x2]
+                if crop.size > 0:
+                    text, conf = self.recognize_line(crop)
+                    if text:
+                        results.append((polygon, text, conf))
+        except Exception as e:
+            print(f"[Ensemble] Detection error: {e}")
+
+        return results
+
+    def _split_wide_detections(
+        self,
+        image: np.ndarray,
+        detections: List
+    ) -> List:
+        """Split wide detections that may span multiple columns."""
+        final_detections = []
+
+        for item in detections:
+            polygon = item[0]
+            x_coords = [p[0] for p in polygon]
+            y_coords = [p[1] for p in polygon]
+            x1, x2 = int(min(x_coords)), int(max(x_coords))
+            y1, y2 = int(min(y_coords)), int(max(y_coords))
+            width = x2 - x1
+            height = y2 - y1
+
+            if width > 400 and width > height * 3:
+                # Extract crop and find text blobs
+                pad = 3
+                crop = image[max(0,y1-pad):min(image.shape[0],y2+pad),
+                            max(0,x1-pad):min(image.shape[1],x2+pad)]
+
+                if crop.size > 0:
+                    if len(crop.shape) == 3:
+                        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    else:
+                        gray = crop.copy()
+
+                    _, binary = cv2.threshold(gray, 0, 255,
+                                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+                    kernel = np.ones((3, 3), np.uint8)
+                    binary = cv2.dilate(binary, kernel, iterations=2)
+
+                    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                        binary, connectivity=8
+                    )
+
+                    blobs = []
+                    for i in range(1, num_labels):
+                        area = stats[i, cv2.CC_STAT_AREA]
+                        if area > 100:
+                            bx = stats[i, cv2.CC_STAT_LEFT]
+                            bw = stats[i, cv2.CC_STAT_WIDTH]
+                            blobs.append((bx, bx + bw))
+
+                    if len(blobs) >= 2:
+                        blobs.sort(key=lambda b: b[0])
+
+                        max_gap = 0
+                        split_x_local = None
+                        for i in range(len(blobs) - 1):
+                            gap = blobs[i+1][0] - blobs[i][1]
+                            if gap > max_gap:
+                                max_gap = gap
+                                split_x_local = (blobs[i][1] + blobs[i+1][0]) / 2
+
+                        if max_gap > 80 and split_x_local is not None:
+                            split_x = x1 + int(split_x_local)
+                            poly1 = [[x1, y1], [split_x-5, y1], [split_x-5, y2], [x1, y2]]
+                            poly2 = [[split_x+5, y1], [x2, y1], [x2, y2], [split_x+5, y2]]
+                            final_detections.append((poly1, "", 0))
+                            final_detections.append((poly2, "", 0))
+                            continue
+
+            final_detections.append(item)
+
+        return final_detections
+
+    def recognize_line(self, line_image: np.ndarray) -> Tuple[str, float]:
+        """
+        Recognize text using ensemble voting.
+
+        Runs each model and combines results using character-level voting.
+
+        Returns:
+            (text, confidence)
+        """
+        if line_image is None or line_image.size == 0:
+            return "", 0.0
+
+        import torch
+        from PIL import Image, ImageOps, ImageEnhance
+
+        # Preprocess image (same as single TrOCR)
+        if len(line_image.shape) == 3:
+            pil_orig = Image.fromarray(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
+        else:
+            pil_orig = Image.fromarray(line_image).convert("RGB")
+
+        # Add padding
+        pad = 16
+        w, h = pil_orig.size
+        padded = Image.new("RGB", (w + 2*pad, h + 2*pad), (255, 255, 255))
+        padded.paste(pil_orig, (pad, pad))
+
+        # Resize
+        w, h = padded.size
+        target_height = 96
+        scale = target_height / h
+        new_w = max(int(w * scale), 64)
+        resized = padded.resize((new_w, target_height), Image.LANCZOS)
+
+        # Convert to grayscale and enhance
+        gray_pil = resized.convert("L")
+        gray_pil = ImageOps.autocontrast(gray_pil, cutoff=2)
+        pil_image = gray_pil.convert("RGB")
+
+        enhancer = ImageEnhance.Contrast(pil_image)
+        pil_image = enhancer.enhance(1.3)
+
+        # Run inference on each model
+        predictions = []
+        for i, (model, processor) in enumerate(zip(self.models, self.processors)):
+            try:
+                pixel_values = processor(
+                    pil_image, return_tensors="pt"
+                ).pixel_values.to(self.device)
+
+                with torch.no_grad():
+                    generated_ids = model.generate(
+                        pixel_values,
+                        max_length=64,
+                        num_beams=5,
+                        early_stopping=True,
+                        length_penalty=1.0,
+                        no_repeat_ngram_size=3,
+                    )
+
+                text = processor.batch_decode(
+                    generated_ids, skip_special_tokens=True
+                )[0].strip()
+
+                # Clean up
+                text = re.sub(r'\s*[.,;:]\s*', ' ', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+
+                # Estimate confidence
+                conf = 0.9
+                if not text or len(text) < 2:
+                    conf = 0.1
+                elif any(x in text.lower() for x in ['%', 'na%', 'sc%', '###']):
+                    conf = 0.1
+
+                # Apply model weight
+                weight = self.weights[i] if i < len(self.weights) else 0.5
+                predictions.append((text, conf, weight, self.model_names[i]))
+
+            except Exception as e:
+                print(f"[Ensemble] Model {self.model_names[i]} error: {e}")
+
+        if not predictions:
+            return "", 0.0
+
+        if len(predictions) == 1:
+            return predictions[0][0], predictions[0][1]
+
+        # Ensemble voting
+        ensemble_text, ensemble_conf = self._ensemble_vote(predictions)
+        return ensemble_text, ensemble_conf
+
+    def _ensemble_vote(
+        self,
+        predictions: List[Tuple[str, float, float, str]]
+    ) -> Tuple[str, float]:
+        """
+        Character-level ensemble voting (similar to temporal consensus).
+
+        Args:
+            predictions: List of (text, confidence, weight, model_name)
+
+        Returns:
+            (consensus_text, confidence)
+        """
+        if not predictions:
+            return "", 0.0
+
+        if len(predictions) == 1:
+            return predictions[0][0], predictions[0][1]
+
+        texts = [p[0] for p in predictions]
+        confs = [p[1] for p in predictions]
+        weights = [p[2] for p in predictions]
+
+        # Combined weight = confidence * model_weight
+        combined_weights = [c * w for c, w in zip(confs, weights)]
+
+        # Find reference (longest text with highest combined weight)
+        ref_idx = max(range(len(texts)),
+                      key=lambda i: (len(texts[i]), combined_weights[i]))
+        reference = texts[ref_idx]
+
+        if not reference:
+            return "", 0.0
+
+        # Align all texts to reference
+        aligned_texts = [self._align_to_reference(reference, t) for t in texts]
+
+        # Vote character by character
+        consensus_chars = []
+        for pos in range(len(reference)):
+            char_votes = {}
+            total_weight = 0
+
+            for i, aligned in enumerate(aligned_texts):
+                if pos < len(aligned):
+                    char = aligned[pos]
+                    weight = combined_weights[i]
+                    char_votes[char] = char_votes.get(char, 0) + weight
+                    total_weight += weight
+
+            if char_votes:
+                best_char = max(char_votes.items(), key=lambda x: x[1])
+                consensus_chars.append(best_char[0])
+
+        consensus_text = "".join(consensus_chars).strip()
+
+        # Calculate consensus confidence
+        try:
+            from rapidfuzz.distance import Levenshtein
+
+            similarities = []
+            for t, w in zip(texts, combined_weights):
+                sim = Levenshtein.normalized_similarity(consensus_text, t)
+                similarities.append(sim * w)
+
+            agreement = sum(similarities) / sum(combined_weights) if combined_weights else 0
+            avg_conf = np.mean(confs)
+            consensus_conf = avg_conf * agreement
+
+        except ImportError:
+            # Fallback
+            consensus_conf = np.mean(confs)
+
+        return consensus_text, consensus_conf
+
+    def _align_to_reference(self, reference: str, text: str) -> str:
+        """Align text to reference by padding/truncating."""
+        if not reference or not text:
+            return text
+
+        if len(text) < len(reference):
+            text = text + " " * (len(reference) - len(text))
+        elif len(text) > len(reference):
+            text = text[:len(reference)]
+
+        return text
 
 
 # =============================================================================
@@ -1280,14 +1724,20 @@ class TemporalOCRPipeline:
         padding: int = 12,
         lang: str = "en",
         adaptive_thresh: bool = False,
-        model_path: str = None
+        model_path: str = None,
+        ensemble_base_model: str = "microsoft/trocr-large-handwritten",
+        ensemble_weights: Tuple[float, float] = (0.6, 0.4)
     ):
         self.max_frames = max_frames
         self.min_frames = min_frames
         self.padding = padding
 
         # Initialize components
-        self.ocr_engine = OCREngine(engine, lang, model_path=model_path)
+        self.ocr_engine = OCREngine(
+            engine, lang, model_path=model_path,
+            ensemble_base_model=ensemble_base_model,
+            ensemble_weights=ensemble_weights
+        )
         self.preprocessor = ImagePreprocessor(adaptive_thresh=adaptive_thresh)
         self.line_detector = LineDetector(self.ocr_engine, padding=padding)
         self.quality_assessor = FrameQualityAssessor(blur_threshold=blur_threshold)
@@ -1626,12 +2076,18 @@ class LineCropOCRPipeline:
         model_path: str = None,
         vision_verify: bool = False,
         vision_model: str = "llava:7b",
-        vision_mode: str = "verify_all"
+        vision_mode: str = "verify_all",
+        ensemble_base_model: str = "microsoft/trocr-large-handwritten",
+        ensemble_weights: Tuple[float, float] = (0.6, 0.4)
     ):
         self.padding = padding
         self.deskew = deskew
 
-        self.ocr_engine = OCREngine(engine, lang, model_path=model_path)
+        self.ocr_engine = OCREngine(
+            engine, lang, model_path=model_path,
+            ensemble_base_model=ensemble_base_model,
+            ensemble_weights=ensemble_weights
+        )
         self.preprocessor = ImagePreprocessor(adaptive_thresh=adaptive_thresh)
         self.line_detector = LineDetector(self.ocr_engine, padding=padding)
 
@@ -1821,6 +2277,12 @@ Examples:
 
   # Process folder of individual images
   python temporal_ocr.py --input images/ --out_dir out --mode single
+
+  # Use ensemble voting (combines fine-tuned + base TrOCR models)
+  python temporal_ocr.py --input photo.jpg --out_dir out --mode single --ensemble
+
+  # Ensemble with custom base model
+  python temporal_ocr.py --input photo.jpg --out_dir out --ensemble --ensemble_base trocr-base-handwritten
         """
     )
 
@@ -1837,12 +2299,24 @@ Examples:
         help="Processing mode: temporal (multi-frame), single (per-image), or auto-detect"
     )
     parser.add_argument(
-        "--engine", "-e", choices=["paddle", "easyocr", "tesseract", "trocr"], default="paddle",
-        help="OCR engine (default: paddle). Use 'trocr' for handwriting."
+        "--engine", "-e", choices=["paddle", "easyocr", "tesseract", "trocr", "ensemble"], default="paddle",
+        help="OCR engine (default: paddle). Use 'trocr' for handwriting, 'ensemble' for multi-model voting."
     )
     parser.add_argument(
         "--model_path", default=None,
-        help="Path to custom TrOCR model (only used with --engine trocr)"
+        help="Path to custom TrOCR model (only used with --engine trocr or ensemble)"
+    )
+    parser.add_argument(
+        "--ensemble", action="store_true",
+        help="Enable ensemble mode: combines fine-tuned and base TrOCR models with character-level voting"
+    )
+    parser.add_argument(
+        "--ensemble_base", default="microsoft/trocr-large-handwritten",
+        help="Base model for ensemble (default: microsoft/trocr-large-handwritten)"
+    )
+    parser.add_argument(
+        "--ensemble_weights", default="0.6,0.4",
+        help="Weights for ensemble voting as 'finetuned,base' (default: 0.6,0.4)"
     )
     parser.add_argument(
         "--lang", "-l", default="en",
@@ -1918,10 +2392,26 @@ Examples:
             print(f"Error: Input path does not exist: {args.input}")
             sys.exit(1)
 
+    # Handle --ensemble flag: override engine to "ensemble"
+    engine = args.engine
+    if args.ensemble:
+        engine = "ensemble"
+
+    # Parse ensemble weights
+    try:
+        weights = tuple(float(w) for w in args.ensemble_weights.split(","))
+        if len(weights) != 2:
+            weights = (0.6, 0.4)
+    except ValueError:
+        weights = (0.6, 0.4)
+
     print(f"[Temporal OCR] Mode: {mode}")
     print(f"[Temporal OCR] Input: {args.input}")
     print(f"[Temporal OCR] Output: {args.out_dir}")
-    print(f"[Temporal OCR] Engine: {args.engine}")
+    print(f"[Temporal OCR] Engine: {engine}")
+    if engine == "ensemble":
+        print(f"[Temporal OCR] Ensemble base: {args.ensemble_base}")
+        print(f"[Temporal OCR] Ensemble weights: {weights}")
     print()
 
     use_consensus = args.use_consensus.lower() in ["true", "yes", "1"]
@@ -1929,7 +2419,7 @@ Examples:
     if mode == "temporal":
         # Temporal aggregation mode
         pipeline = TemporalOCRPipeline(
-            engine=args.engine,
+            engine=engine,
             max_frames=args.max_frames,
             min_frames=args.min_frames,
             use_consensus=use_consensus,
@@ -1937,7 +2427,9 @@ Examples:
             padding=args.padding,
             lang=args.lang,
             adaptive_thresh=args.adaptive_thresh,
-            model_path=args.model_path
+            model_path=args.model_path,
+            ensemble_base_model=args.ensemble_base,
+            ensemble_weights=weights
         )
 
         result = pipeline.process(args.input, args.out_dir)
@@ -1956,7 +2448,7 @@ Examples:
     else:
         # Single image mode
         pipeline = LineCropOCRPipeline(
-            engine=args.engine,
+            engine=engine,
             padding=args.padding,
             lang=args.lang,
             adaptive_thresh=args.adaptive_thresh,
@@ -1964,7 +2456,9 @@ Examples:
             model_path=args.model_path,
             vision_verify=args.vision_verify,
             vision_model=args.vision_model,
-            vision_mode=args.vision_mode
+            vision_mode=args.vision_mode,
+            ensemble_base_model=args.ensemble_base,
+            ensemble_weights=weights
         )
 
         if input_path.is_file():

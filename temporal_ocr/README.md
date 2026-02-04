@@ -15,7 +15,7 @@ Tested on real handwritten grocery lists with varied handwriting styles, two-col
 
 ## Features
 
-- **TrOCR Recognition**: Microsoft's transformer-based handwriting model (`trocr-large-handwritten`)
+- **Fine-Tuned TrOCR**: Custom model trained on 1,500+ IAM Handwriting Database samples plus user handwriting
 - **Intelligent Correction**: 300+ grocery vocabulary with fuzzy matching and semantic validation
 - **Two-Column Detection**: Automatic layout detection using DBSCAN clustering
 - **Strikethrough Filtering**: Detects and excludes crossed-out items
@@ -230,8 +230,38 @@ The OCR server includes path validation to prevent directory traversal attacks:
 
 MIT License
 
+## Model Training
+
+The fine-tuned TrOCR model (`finetune/model_v3/final`) was trained on:
+
+| Dataset | Samples | Description |
+|---------|---------|-------------|
+| IAM Handwriting Database | ~1,500 | Academic dataset with diverse handwriting styles |
+| User samples (videotest2) | 21 | Custom grocery list handwriting |
+| User samples (videotest3) | 16 | Additional grocery list handwriting |
+| **Total** | **~1,537** | Mixed general + domain-specific |
+
+The model automatically uses the fine-tuned weights when available, falling back to `microsoft/trocr-base-handwritten` otherwise.
+
+### Training Scripts
+
+```bash
+# Prepare training data
+python finetune/prepare_data.py
+
+# Download IAM dataset (requires registration)
+python finetune/download_iam.py
+
+# Merge datasets
+python finetune/merge_datasets.py
+
+# Train model
+python finetune/train_merged.py
+```
+
 ## Acknowledgments
 
-- Microsoft TrOCR for the handwriting recognition model
+- Microsoft TrOCR for the base handwriting recognition model
+- [IAM Handwriting Database](https://fki.tic.heia-fr.ch/databases/iam-handwriting-database) for training data
 - EasyOCR for text detection
 - The grocery vocabulary is optimized for North American grocery items

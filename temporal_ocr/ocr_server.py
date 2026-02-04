@@ -66,8 +66,9 @@ ALLOWED_DIRECTORIES = [
 ]
 ALLOWED_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp'}
 
-# Model paths - fine-tuned model preferred if available (v3 trained on IAM + grocery + videotest3)
-FINETUNED_MODEL_PATH = Path(__file__).parent / "finetune" / "model_v3" / "final"
+# Model paths - fine-tuned model preferred if available (v4 trained on 6800+ IAM samples with augmentation)
+FINETUNED_MODEL_PATH = Path(__file__).parent / "finetune" / "model_v4" / "final"
+FINETUNED_MODEL_V3_PATH = Path(__file__).parent / "finetune" / "model_v3" / "final"
 FINETUNED_MODEL_V2_PATH = Path(__file__).parent / "finetune" / "model_v2" / "final"
 FINETUNED_MODEL_V1_PATH = Path(__file__).parent / "finetune" / "model" / "final"
 BASE_MODEL_NAME = 'microsoft/trocr-base-handwritten'
